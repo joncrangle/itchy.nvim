@@ -1,0 +1,106 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "tests/**"
+      - "lua/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "tests/**"
+      - "lua/**"
+      - ".github/workflows/test.yml"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        neovim_version: ["v0.11.0"]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim_version }}
+
+      - name: Setup dependencies for Ubuntu
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks
+          sudo luarocks install luacheck
+          sudo apt-get install -y python3 nodejs npm zsh
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          curl -fsSL https://deno.land/x/install/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          if ! command -v go &> /dev/null; then
+            wget https://go.dev/dl/go1.24.2.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.24.2.linux-amd64.tar.gz
+            echo "/usr/local/go/bin" >> $GITHUB_PATH
+          fi
+          sudo snap install powershell --classic
+
+      - name: Setup dependencies for macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install lua luarocks
+          luarocks install luacheck
+          brew install uv
+          brew install deno
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          brew install go
+          brew install --cask powershell
+
+      # - name: Setup Windows dependencies
+      #   if: matrix.os == 'windows-latest'
+      #   shell: pwsh
+      #   run: |
+      #     iwr -useb get.scoop.sh | iex
+      #       scoop install lua luarocks pwsh
+      #       luarocks install luafilesystem --server=https://luarocks.org/dev
+      #       $allPaths = @(
+      #         "C:\Windows\System32",
+      #         "C:\Windows",
+      #         "C:\Windows\System32\WindowsPowerShell\v1.0",
+      #         "$env:ProgramFiles\PowerShell\7",
+      #         "$env:ProgramFiles\PowerShell\7\bin",
+      #         "$env:USERPROFILE\scoop\shims"
+      #       )
+      #       foreach ($path in $allPaths) {
+      #         if (Test-Path $path) {
+      #           echo $path | Out-File -FilePath $env:GITHUB_PATH -Append
+      #         }
+      #       }
+      #       $rocks_tree = "$env:USERPROFILE\scoop\apps\luarocks\current\rocks"
+      #       $env:LUA_PATH = "$rocks_tree\share\lua\5.4\?.lua;$rocks_tree\share\lua\5.4\?\init.lua;;"
+      #       $env:LUA_CPATH = "$rocks_tree\lib\lua\5.4\?.dll;;"
+      #       echo "LUA_PATH=$($env:LUA_PATH)" | Out-File -FilePath $env:GITHUB_ENV -Append
+      #       echo "LUA_CPATH=$($env:LUA_CPATH)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Test Cache
+        uses: actions/cache@v4
+        with:
+          path: .tests
+          key: ${{ runner.os }}-tests-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Run tests (Unix)
+        if: matrix.os != 'windows-latest'
+        run: nvim -l tests/minit.lua tests --minitest
+
+      - name: Run tests (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: nvim -l tests/minit.lua tests --minitest

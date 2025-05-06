@@ -1,0 +1,7 @@
+.DS_Store
+.tests
+.repro
+doc/tags
+debug
+*.log
+.venv
