@@ -117,6 +117,13 @@ function M.run(rt, buf)
   buf = buf or vim.api.nvim_get_current_buf()
   local ft = vim.bo[buf].filetype
 
+  -- snacks.nvim fallback for lua
+  if ft == 'lua' and config.cfg.integrations.snacks and package.loaded['snacks'] then
+    local snacks = package.loaded['snacks']
+    snacks.debug.run()
+    return
+  end
+
   local runtime, error = runtimes.get_runtime(ft, rt)
   if error then
     return vim.notify(error, vim.log.levels.ERROR)
