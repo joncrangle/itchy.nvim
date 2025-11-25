@@ -98,9 +98,9 @@ jobs:
 
       - name: Run tests (Unix)
         if: matrix.os != 'windows-latest'
-        run: nvim -l tests/minit.lua tests --minitest
+        run: nvim -l tests/minit.lua --minitest
 
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: nvim -l tests/minit.lua tests --minitest
+        run: nvim -l tests/minit.lua --minitest
