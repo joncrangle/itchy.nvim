@@ -38,14 +38,13 @@ function M.get_runtime(ft, name)
   return runtime, nil
 end
 
---- Create a runtime configuration (checks executable availability)
+--- Create a runtime configuration
 ---@param ft string
 ---@param cmd string
 ---@param args string[]
 ---@param offset? integer
 ---@param temp_file? boolean
 ---@param env? table<string, string>
----@return itchy.Runtime?
 function M.create_runtime(ft, cmd, args, offset, temp_file, env)
   if vim.fn.executable(cmd) ~= 1 then
     return nil
@@ -63,81 +62,67 @@ function M.create_runtime(ft, cmd, args, offset, temp_file, env)
   }
 end
 
----@class itchy.RuntimeSpec
----@field ft string
----@field cmd string|string[] Command name(s) to check (first available is used)
----@field args string[]
----@field offset? integer
----@field temp_file? boolean
----@field env? table<string, string>
+-- Helper function to find the primary python executable ('python' or 'python3')
+local function get_python_runtime()
+  local cmd
+  if vim.fn.executable 'python' == 1 then
+    cmd = 'python'
+  elseif vim.fn.executable 'python3' == 1 then
+    cmd = 'python3'
+  end
 
--- Runtime specifications (deferred - executable check happens in load_runtimes)
----@type table<string, table<string, itchy.RuntimeSpec>>
-local runtime_specs = {
+  if cmd then
+    return M.create_runtime('python', cmd, { '-c' }, 26)
+  end
+  return nil
+end
+
+---@type table<string, itchy.Runtime[]>
+M.available_runtimes = {
   go = {
-    go = { ft = 'go', cmd = 'go', args = { 'run' }, offset = 0, temp_file = true, env = { GO111MODULE = 'off' } },
+    go = M.create_runtime('go', 'go', { 'run' }, 0, true, { GO111MODULE = 'off' }),
   },
   javascript = {
-    bun = { ft = 'javascript', cmd = 'bun', args = { 'run' }, offset = 0, temp_file = true },
-    deno = { ft = 'javascript', cmd = 'deno', args = { 'eval' } },
-    node = { ft = 'javascript', cmd = 'node', args = { '-e' } },
+    bun = M.create_runtime('javascript', 'bun', { 'run' }, 0, true),
+    deno = M.create_runtime('javascript', 'deno', { 'eval' }),
+    node = M.create_runtime('javascript', 'node', { '-e' }),
   },
   typescript = {
-    bun = { ft = 'typescript', cmd = 'bun', args = { 'run' }, offset = 0, temp_file = true },
-    deno = { ft = 'typescript', cmd = 'deno', args = { 'eval', '--ext=ts' } },
-    node = { ft = 'typescript', cmd = 'node', args = { '--no-warnings', '-e' } },
+    bun = M.create_runtime('typescript', 'bun', { 'run' }, 0, true),
+    deno = M.create_runtime('typescript', 'deno', { 'eval', '--ext=ts' }),
+    node = M.create_runtime('typescript', 'node', { '--no-warnings', '-e' }),
   },
   python = {
-    python = { ft = 'python', cmd = { 'python', 'python3' }, args = { '-c' }, offset = 26 },
-    uv = { ft = 'python', cmd = 'uv', args = { 'run', 'python', '-c' }, offset = 26 },
+    python = get_python_runtime(),
+    uv = M.create_runtime('python', 'uv', { 'run', 'python', '-c' }, 26),
   },
   -- shell command runtimes
   bash = {
-    bash = { ft = 'bash', cmd = 'bash', args = { '-c' } },
+    bash = M.create_runtime('bash', 'bash', { '-c' }),
   },
   zsh = {
-    zsh = { ft = 'zsh', cmd = 'zsh', args = { '-c' } },
+    zsh = M.create_runtime('zsh', 'zsh', { '-c' }),
   },
   sh = {
-    sh = { ft = 'sh', cmd = 'sh', args = { '-c' } },
+    sh = M.create_runtime('sh', 'sh', { '-c' }),
   },
   -- windows shell runtimes
   dosbatch = {
-    cmd = { ft = 'dosbatch', cmd = 'cmd', args = { '/c' } },
+    cmd = M.create_runtime('dosbatch', 'cmd', { '/c' }),
   },
   ps1 = {
-    pwsh = { ft = 'ps1', cmd = 'pwsh', args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' } },
-    powershell = { ft = 'ps1', cmd = 'powershell', args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' } },
+    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }),
+    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }),
   },
 }
 
--- Keep available_runtimes for backwards compatibility (now contains RuntimeSpec, not Runtime)
--- Note: This is for reference only. Use M.runtimes after calling load_runtimes() for actual runtime objects.
-M.available_runtimes = runtime_specs
-
---- Load runtimes by checking executable availability at call time.
---- This resets M.runtimes to allow re-detection of newly installed executables.
+--- Remove nil runtimes (from missing executables)
 function M.load_runtimes()
-  M.runtimes = {} -- Reset to allow re-detection
-  for ft, specs in pairs(runtime_specs) do
-    for name, spec in pairs(specs) do
-      -- Handle cmd as string or array of strings (for fallback like python/python3)
-      local cmds = type(spec.cmd) == 'table' and spec.cmd or { spec.cmd }
-      for _, cmd in ipairs(cmds) do
-        if vim.fn.executable(cmd) == 1 then
-          M.runtimes[ft] = M.runtimes[ft] or {}
-          M.runtimes[ft][name] = {
-            cmd = cmd,
-            args = spec.args,
-            offset = spec.offset or 0,
-            wrapper = function(code, wrapper_offset)
-              return require('itchy.wrappers').create_wrapper(spec.ft, code, wrapper_offset)
-            end,
-            temp_file = spec.temp_file or false,
-            env = spec.env or {},
-          }
-          break -- Use first available command
-        end
+  for ft, runtimes in pairs(M.available_runtimes) do
+    for name, runtime in pairs(runtimes) do
+      if runtime and vim.fn.executable(runtime.cmd) == 1 then
+        M.runtimes[ft] = M.runtimes[ft] or {}
+        M.runtimes[ft][name] = runtime
       end
     end
   end
