@@ -55,6 +55,8 @@ jobs:
       - name: Setup dependencies for macOS
         if: matrix.os == 'macos-latest'
         run: |
+          brew trust --formula azure/bicep/bicep
+          brew trust aws/tap
           brew install lua luarocks
           luarocks install luacheck
           brew install uv
@@ -62,7 +64,7 @@ jobs:
           curl -fsSL https://bun.sh/install | bash
           echo "$HOME/.bun/bin" >> $GITHUB_PATH
           brew install go
-          brew install --cask powershell
+          brew install --cask powershell || brew install --cask powershell@preview
 
       # - name: Setup Windows dependencies
       #   if: matrix.os == 'windows-latest'
