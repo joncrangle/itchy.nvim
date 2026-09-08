@@ -75,20 +75,23 @@ local function invalidate_run(buf, clear_namespace)
       pcall(function()
         run.handle:cancel()
       end)
-      -- Repeated cancellation must be harmless.
-      pcall(function()
-        run.handle:cancel()
-      end)
     end
     cleanup_run_resources(run)
     active_runs[buf] = nil
   end
   if clear_namespace then
     if vim.api.nvim_buf_is_valid(buf) then
-      local ft = vim.bo[buf].filetype
-      local ns_id = vim.api.nvim_get_namespaces()['itchy_' .. ft .. '_result']
-      if ns_id then
-        pcall(vim.api.nvim_buf_clear_namespace, buf, ns_id, 0, -1)
+      if run and run.namespace then
+        -- Clear the namespace the run actually rendered into, not the
+        -- buffer's live filetype (which may have changed since the run).
+        pcall(vim.api.nvim_buf_clear_namespace, buf, run.namespace, 0, -1)
+      else
+        -- Idle clear with no active run: fall back to the live filetype.
+        local ft = vim.bo[buf].filetype
+        local ns_id = vim.api.nvim_get_namespaces()['itchy_' .. ft .. '_result']
+        if ns_id then
+          pcall(vim.api.nvim_buf_clear_namespace, buf, ns_id, 0, -1)
+        end
       end
     end
   end
@@ -365,26 +368,29 @@ function M.run(rt, buf)
     end)
 
     cleanup_run_resources(run)
-    -- Release ownership only if still current (a newer run may have
-    -- superseded us while result processing ran).
-    if active_runs[run.buf] and active_runs[run.buf].id == run.id then
-      active_runs[run.buf] = nil
-    end
-
-    local guard_id = run.id
+    -- Keep ownership through the scheduled render: apply_extmarks runs
+    -- inside vim.schedule, so a clear/edit arriving between completion and
+    -- rendering must still find this run to invalidate it. Releasing here
+    -- would make that clear a no-op (nil entry) and let the pending render
+    -- resurrect extmarks. Guard requires identity (nil fails); release runs
+    -- one tick after render via FIFO vim.schedule ordering.
     local guard_buf = run.buf
     utils.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line, function()
-      -- Fresh completions release ownership above (nil entry) but were
-      -- current when they finished; stale superseding runs re-register a
-      -- different id. Decline rendering when superseded/cancelled/invalid.
+      -- Decline rendering when superseded/cleared/invalid. Identity check
+      -- covers superseded (different object), cleared-after-completion
+      -- (nil entry), and cancelled-but-not-yet-replaced.
       if run.cancelled then
         return false
       end
-      local current = active_runs[guard_buf]
-      if current ~= nil and current.id ~= guard_id then
+      if active_runs[guard_buf] ~= run then
         return false
       end
       return vim.api.nvim_buf_is_valid(guard_buf)
+    end)
+    vim.schedule(function()
+      if active_runs[guard_buf] == run then
+        active_runs[guard_buf] = nil
+      end
     end)
   end
 

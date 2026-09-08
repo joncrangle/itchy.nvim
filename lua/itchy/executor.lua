@@ -25,15 +25,24 @@ M._backend_override = nil
 
 --- Whether the running Neovim can use the vim.async backend.
 ---Requires explicit 0.13+ plus the expected structured-concurrency API.
+---Accessing vim.async can throw (E5113) when VIMRUNTIME is incomplete
+---or a dev build predates the module, so probe it defensively and fall
+---back to the system backend instead of failing plugin startup.
 ---@return boolean
 function M.supports_vim_async()
   if vim.fn.has('nvim-0.13') ~= 1 then
     return false
   end
-  if type(vim.async) ~= 'table' then
+  local ok, async = pcall(function()
+    return vim.async
+  end)
+  if not ok or type(async) ~= 'table' then
     return false
   end
-  return type(vim.async.run) == 'function' and type(vim.async.await) == 'function'
+  local ok_api, has_api = pcall(function()
+    return type(async.run) == 'function' and type(async.await) == 'function'
+  end)
+  return ok_api and has_api or false
 end
 
 ---@return string backend module name in use (for tests/CI assertions)

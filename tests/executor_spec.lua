@@ -371,6 +371,26 @@ describe('itchy buffer-owned execution lifecycle', function()
     api.nvim_buf_delete(buf, { force = true })
   end)
 
+  it('clear between completion and render blocks resurrection', function()
+    local buf = setup_buf('itchytest', { 'code' })
+    itchy.run('fake', buf)
+    -- Complete the run: schedules render + release via vim.schedule.
+    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'LINE0: late\n', stderr = '' })
+    -- Clear before the scheduled render fires. Must invalidate the
+    -- completed-but-pending run so it cannot resurrect extmarks.
+    itchy.clear(buf)
+    vim.wait(500, function()
+      return false
+    end, 50)
+    local namespaces = api.nvim_get_namespaces()
+    local ns = namespaces['itchy_itchytest_result']
+    if ns and api.nvim_buf_is_valid(buf) then
+      eq(#get_marks(buf, ns), 0)
+    end
+    eq(itchy._active_runs[buf], nil)
+    api.nvim_buf_delete(buf, { force = true })
+  end)
+
   it('edit invalidation uses the TextChanged path and suppresses stale output', function()
     local buf = setup_buf('itchytest', { 'code' })
     itchy.run('fake', buf)
