@@ -20,10 +20,12 @@ describe('itchy.utils', function()
   it('debug_print should print only when debug_mode is enabled', function()
     config.cfg.debug_mode = true
     local printed_output = {}
+    local orig_print = _G.print
     _G.print = function(...)
       table.insert(printed_output, table.concat({ ... }, ' '))
     end
     M.debug_print 'test message'
+    _G.print = orig_print
     eq(printed_output[1], 'test message')
   end)
 
@@ -61,8 +63,45 @@ describe('itchy.utils', function()
     falsy(M.should_filter_line 'Some real error message')
   end)
 
-  it('create_temp_file should create files with correct extensions', function()
-    local _, _, code = M.create_temp_file('javascript', 'console.log(1);')
-    truthy(code:match '%.js$' ~= nil)
+  it('create_temp_code_file should create only the source file with correct extension', function()
+    local path, err = M.create_temp_code_file('javascript', 'console.log(1);')
+    assert(path ~= nil, tostring(err))
+    truthy(path:match '%.js$' ~= nil)
+    local f = io.open(path, 'r')
+    truthy(f ~= nil)
+    if f then
+      local content = f:read '*a'
+      f:close()
+      eq(content, 'console.log(1);')
+    end
+    M.remove_temp_file(path)
+    falsy(vim.fn.filereadable(path) == 1)
+  end)
+
+  it('process_output_text should yield every line including final line without newline', function()
+    local seen = {}
+    M.process_output_text('a\nb\nc', function(line)
+      table.insert(seen, line)
+    end)
+    assert.are.same(seen, { 'a', 'b', 'c' })
+  end)
+
+  it('process_output_text should normalize CRLF and skip empty lines', function()
+    local seen = {}
+    M.process_output_text('a\r\n\r\nb\r c\n', function(line)
+      table.insert(seen, line)
+    end)
+    assert.are.same(seen, { 'a', 'b', ' c' })
+  end)
+
+  it('process_output_text should ignore nil/empty input', function()
+    local count = 0
+    M.process_output_text(nil, function()
+      count = count + 1
+    end)
+    M.process_output_text('', function()
+      count = count + 1
+    end)
+    eq(count, 0)
   end)
 end)

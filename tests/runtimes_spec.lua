@@ -1,4 +1,5 @@
 local itchy = require 'itchy'
+local runtimes = require 'itchy.runtimes'
 local assert = require 'luassert'
 
 local pending = pending or function(message)
@@ -8,6 +9,16 @@ local pending = pending or function(message)
 end
 
 local api = vim.api
+
+--- Whether the system sh parses the bash-oriented wrapper. dash (the
+--- default sh on Debian/Ubuntu) rejects `function name()` at parse time,
+--- so the wrapper can never run there. Probe once instead of failing.
+local sh_supports_wrapper = (function()
+  local ok, res = pcall(function()
+    return vim.system({ 'sh', '-c', 'function itchy_probe() { :; }; itchy_probe' }, { text = true }):wait()
+  end)
+  return ok and res ~= nil and res.code == 0
+end)()
 
 ---@class itchy.TestCase
 ---@field path string
@@ -180,20 +191,32 @@ end
 for ft, test_case in pairs(test_cases) do
   describe('Itchy run for ' .. ft, function()
     local buf
-    local runtimes = require 'itchy.runtimes'
 
     before_each(function()
+      -- Other spec files reset package.loaded between tests, which orphans
+      -- module instances captured at file-load time. Re-require here so the
+      -- registry below and itchy.run() observe the same live instances.
+      package.loaded['itchy'] = nil
+      package.loaded['itchy.runtimes'] = nil
+      itchy = require 'itchy'
+      runtimes = require 'itchy.runtimes'
+
       local content = read_file(test_case.path)
       assert(content, 'Failed to read test file: ' .. test_case.path)
 
       buf = setup_test_buffer(ft, content)
-      require('itchy.runtimes').load_runtimes()
+      runtimes.load_runtimes()
     end)
 
     for _, rt in ipairs(test_case.runtimes) do
       it(('with runtime %s'):format(rt), function()
         if not runtimes.runtimes[ft] or not runtimes.runtimes[ft][rt] then
           pending(('Runtime %s not available for %s'):format(rt, ft))
+          return
+        end
+
+        if ft == 'sh' and not sh_supports_wrapper then
+          pending('system sh is dash; the wrapper requires bash')
           return
         end
 
@@ -213,8 +236,8 @@ for ft, test_case in pairs(test_cases) do
         assert(ns_wait_success, 'Namespace was not created within timeout')
         local ns_id = vim.api.nvim_get_namespaces()[namespace_name]
 
-        -- Wait for the extmarks
-        local initial_wait_success = vim.wait(5000, function()
+        -- Wait for the extmarks (generous: cold `go run` compiles on CI)
+        local initial_wait_success = vim.wait(30000, function()
           local extmarks = get_extmark_text(buf, ns_id)
           return #extmarks > 0
         end, 50)

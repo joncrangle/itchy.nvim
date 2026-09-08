@@ -23,6 +23,23 @@ When you don't _need_ a debugger. Quickly evaluate code and view output as virtu
 - Shell scripts: `bash`, `sh`, `zsh`
 - Windows scripts: `dosbatch` (very buggy), `pwsh`, `powershell`
 
+## ⚡ Execution
+
+Subprocesses run through `vim.system()` with argv-style arguments (no shell
+string building), so arguments with spaces or special characters are passed
+through correctly. Runtime environment variables (e.g. Go's `GO111MODULE`)
+are applied to the child process only and never leak into Neovim.
+
+- Neovim 0.11 and 0.12 use a callback-based `vim.system()` execution path.
+- Neovim 0.13+ automatically uses `vim.async` structured concurrency to own
+  the subprocess, await completion, and cancel it.
+- No configuration is required; backend selection is automatic. Neovim 0.13
+  is not required to use the plugin.
+
+Each buffer owns at most one execution: starting a new run supersedes the
+previous one, and clearing, editing, or deleting the buffer cancels active
+work so stale results can never overwrite newer output.
+
 ## 📦 Installation
 
 [folke/lazy.nvim](https://github.com/folke/lazy.nvim)

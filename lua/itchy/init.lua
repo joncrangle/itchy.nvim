@@ -4,7 +4,135 @@ local M = {}
 local config = require 'itchy.config'
 local runtimes = require 'itchy.runtimes'
 local utils = require 'itchy.utils'
-local uv = vim.uv or vim.loop
+local executor = require 'itchy.executor'
+
+---@class itchy.ActiveRun
+---@field id integer generation
+---@field buf integer owning buffer
+---@field handle itchy.ExecutionHandle|nil
+---@field temp_file? string source tempfile to clean exactly once
+---@field cleaned boolean whether temp resources were released
+---@field cancelled boolean whether the run was superseded/cleared
+---@field namespace integer result namespace
+---@field ft string filetype
+
+---@type table<integer, itchy.ActiveRun>
+local active_runs = {}
+local next_run_id = 0
+---@type table<integer, boolean>
+local lifecycle_attached = {}
+
+-- Test-only introspection (not public API).
+M._active_runs = active_runs
+M._executor = executor
+function M._reset_runs()
+  for _, run in pairs(active_runs) do
+    if run.handle then
+      pcall(function()
+        run.handle:cancel()
+      end)
+    end
+    if not run.cleaned and run.temp_file then
+      utils.remove_temp_file(run.temp_file)
+      run.cleaned = true
+    end
+  end
+  for k in pairs(active_runs) do
+    active_runs[k] = nil
+  end
+  for k in pairs(lifecycle_attached) do
+    lifecycle_attached[k] = nil
+  end
+end
+
+---@param run itchy.ActiveRun
+local function cleanup_run_resources(run)
+  if run.cleaned then
+    return
+  end
+  run.cleaned = true
+  if run.temp_file then
+    utils.remove_temp_file(run.temp_file)
+  end
+end
+
+---@param run itchy.ActiveRun
+---@return boolean
+local function is_current_run(run)
+  local current = active_runs[run.buf]
+  return current ~= nil and current.id == run.id and not run.cancelled
+end
+
+M._is_current_run = is_current_run
+
+---@param buf integer
+---@param clear_namespace? boolean
+local function invalidate_run(buf, clear_namespace)
+  local run = active_runs[buf]
+  if run then
+    run.cancelled = true
+    if run.handle then
+      pcall(function()
+        run.handle:cancel()
+      end)
+    end
+    cleanup_run_resources(run)
+    active_runs[buf] = nil
+  end
+  if clear_namespace then
+    if vim.api.nvim_buf_is_valid(buf) then
+      if run and run.namespace then
+        -- Clear the namespace the run actually rendered into, not the
+        -- buffer's live filetype (which may have changed since the run).
+        pcall(vim.api.nvim_buf_clear_namespace, buf, run.namespace, 0, -1)
+      else
+        -- Idle clear with no active run: fall back to the live filetype.
+        local ft = vim.bo[buf].filetype
+        local ns_id = vim.api.nvim_get_namespaces()['itchy_' .. ft .. '_result']
+        if ns_id then
+          pcall(vim.api.nvim_buf_clear_namespace, buf, ns_id, 0, -1)
+        end
+      end
+    end
+  end
+end
+
+M._invalidate_run = invalidate_run
+
+---@param buf integer
+local function ensure_lifecycle(buf)
+  if lifecycle_attached[buf] then
+    return
+  end
+  lifecycle_attached[buf] = true
+  local group = vim.api.nvim_create_augroup('itchy_lifecycle_' .. buf, { clear = true })
+  vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      invalidate_run(buf, true)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      invalidate_run(buf, false)
+      lifecycle_attached[buf] = nil
+    end,
+  })
+end
+
+--- Load executable runtimes on demand. The FileType autocmd in setup()
+--- populates runtimes asynchronously, so a :Itchy command issued before it
+--- fires (or in a buffer whose FileType already fired) would otherwise see
+--- an empty table. load_runtimes() is idempotent and re-checks executables.
+---@param ft string
+local function ensure_runtimes(ft)
+  if not runtimes.runtimes[ft] or vim.tbl_count(runtimes.runtimes[ft]) == 0 then
+    runtimes.load_runtimes()
+  end
+end
 
 ---@param opts? itchy.Opts
 function M.setup(opts)
@@ -115,7 +243,11 @@ function M.run(rt, buf)
   end
 
   buf = buf or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
   local ft = vim.bo[buf].filetype
+  ensure_runtimes(ft)
 
   -- snacks.nvim fallback for lua
   if ft == 'lua' and config.cfg.integrations.snacks and package.loaded['snacks'] then
@@ -131,16 +263,8 @@ function M.run(rt, buf)
   assert(runtime ~= nil)
 
   local namespace = vim.api.nvim_create_namespace('itchy_' .. ft .. '_result')
-  local function clear()
-    vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
-  end
-  clear()
+  vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
 
-  vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
-    group = vim.api.nvim_create_augroup('itchy_debug_run_' .. buf, { clear = true }),
-    buffer = buf,
-    callback = clear,
-  })
   local code
   local mode = vim.fn.mode()
   local line_mapping = {}
@@ -171,108 +295,128 @@ function M.run(rt, buf)
   local outputs_by_line = {}
   local errors_by_line = {}
 
+  -- Latest run wins: cancel any previous execution for this buffer.
+  invalidate_run(buf, false)
+  -- Re-clear after invalidation (invalidate with false keeps extmarks until now).
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.api.nvim_buf_clear_namespace, buf, namespace, 0, -1)
+  end
+
+  -- Build argv without shell strings; preserves spaces/special chars.
+  local cmd = { runtime.cmd }
+  for _, arg in ipairs(runtime.args or {}) do
+    table.insert(cmd, arg)
+  end
+
+  local temp_file = nil
   if runtime.temp_file then
-    local stdout_file, stderr_file, code_file = utils.create_temp_file(ft, wrapped_code)
-
-    local shell, shell_arg, command_str
-
-    if utils.is_windows() then
-      shell = 'cmd.exe'
-      shell_arg = '/C'
-    else
-      shell = 'sh'
-      shell_arg = '-c'
-    end
-
-    command_str = string.format(
-      '%s %s %s "%s" > "%s" 2> "%s"',
-      runtime.env and table.concat(runtime.env, ' ') or '',
-      runtime.cmd,
-      table.concat(runtime.args, ' '),
-      code_file,
-      stdout_file,
-      stderr_file
-    )
-
-    local handle
-    ---@diagnostic disable-next-line: missing-fields
-    handle = uv.spawn(shell, { args = { shell_arg, command_str }, cwd = vim.fn.getcwd() }, function()
-      for line in io.lines(stdout_file) do
-        utils.process_output(line, outputs_by_line, line_count, line_mapping)
-      end
-      for line in io.lines(stderr_file) do
-        utils.process_error(line, errors_by_line, ft, line_count, line_mapping)
-      end
-
-      utils.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line)
-
-      os.remove(code_file)
-      os.remove(stdout_file)
-      os.remove(stderr_file)
-
-      if handle then
-        handle:close()
-      end
-    end)
-
-    if not handle then
-      vim.notify('Failed to spawn process', vim.log.levels.ERROR)
+    local path, terr = utils.create_temp_code_file(ft, wrapped_code)
+    if not path then
+      vim.notify('itchy: failed to create temp file: ' .. tostring(terr), vim.log.levels.ERROR, { title = 'itchy' })
       return
     end
+    temp_file = path
+    table.insert(cmd, path)
   else
-    local stdout_handle = uv.new_pipe(false)
-    local stderr_handle = uv.new_pipe(false)
+    table.insert(cmd, wrapped_code)
+  end
 
-    local args = vim.deepcopy(runtime.args)
-    table.insert(args, wrapped_code)
+  next_run_id = next_run_id + 1
+  ---@type itchy.ActiveRun
+  local run = {
+    id = next_run_id,
+    buf = buf,
+    handle = nil,
+    temp_file = temp_file,
+    cleaned = false,
+    cancelled = false,
+    namespace = namespace,
+    ft = ft,
+  }
+  active_runs[buf] = run
+  ensure_lifecycle(buf)
 
-    if runtime.env then
-      for key, value in pairs(runtime.env) do
-        vim.fn.setenv(key, value)
-      end
-    end
-
-    local handle
-    ---@diagnostic disable-next-line: missing-fields
-    handle = uv.spawn(runtime.cmd, {
-      args = args,
-      cwd = vim.fn.getcwd(),
-      stdio = { nil, stdout_handle, stderr_handle },
-      hide = true,
-    }, function()
-      utils.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line)
-
-      if stdout_handle then
-        stdout_handle:read_stop()
-        stdout_handle:close()
-      end
-
-      if stderr_handle then
-        stderr_handle:read_stop()
-        stderr_handle:close()
-      end
-
-      if handle then
-        handle:close()
-      end
-    end)
-
-    if not handle then
-      vim.notify('Failed to spawn process', vim.log.levels.ERROR)
+  local function complete_run(err, result)
+    -- Stale results must never publish, even if the backend still invokes
+    -- its callback after cancellation.
+    if not is_current_run(run) then
+      cleanup_run_resources(run)
       return
     end
-
-    if stdout_handle then
-      stdout_handle:read_start(utils.create_stream_handler(function(line)
-        utils.process_output(line, outputs_by_line, line_count, line_mapping)
-      end))
+    if not vim.api.nvim_buf_is_valid(run.buf) then
+      cleanup_run_resources(run)
+      active_runs[run.buf] = nil
+      return
     end
-
-    if stderr_handle then
-      stderr_handle:read_start(utils.create_stream_handler(function(line)
-        utils.process_error(line, errors_by_line, ft, line_count, line_mapping)
-      end))
+    if err then
+      cleanup_run_resources(run)
+      active_runs[run.buf] = nil
+      if err == 'cancelled' then
+        return
+      end
+      vim.notify('itchy: execution failed: ' .. tostring(err), vim.log.levels.ERROR, { title = 'itchy' })
+      return
     end
+    assert(result ~= nil)
+    -- Non-zero exits still render stdout/stderr; wrappers surface
+    -- compiler/runtime diagnostics inline.
+    utils.process_output_text(result.stdout, function(line)
+      utils.process_output(line, outputs_by_line, line_count, line_mapping)
+    end)
+    utils.process_output_text(result.stderr, function(line)
+      utils.process_error(line, errors_by_line, ft, line_count, line_mapping)
+    end)
+
+    cleanup_run_resources(run)
+    -- Keep ownership through the scheduled render: apply_extmarks runs
+    -- inside vim.schedule, so a clear/edit arriving between completion and
+    -- rendering must still find this run to invalidate it. Releasing here
+    -- would make that clear a no-op (nil entry) and let the pending render
+    -- resurrect extmarks. Guard requires identity (nil fails); release runs
+    -- one tick after render via FIFO vim.schedule ordering.
+    local guard_buf = run.buf
+    utils.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line, function()
+      -- Decline rendering when superseded/cleared/invalid. Identity check
+      -- covers superseded (different object), cleared-after-completion
+      -- (nil entry), and cancelled-but-not-yet-replaced.
+      if run.cancelled then
+        return false
+      end
+      if active_runs[guard_buf] ~= run then
+        return false
+      end
+      return vim.api.nvim_buf_is_valid(guard_buf)
+    end)
+    vim.schedule(function()
+      if active_runs[guard_buf] == run then
+        active_runs[guard_buf] = nil
+      end
+    end)
+  end
+
+  local env = nil
+  if runtime.env and next(runtime.env) ~= nil then
+    env = runtime.env
+  end
+
+  local ok, handle_or_err = pcall(executor.execute, {
+    cmd = cmd,
+    cwd = vim.fn.getcwd(),
+    env = env,
+  }, complete_run)
+
+  if not ok then
+    cleanup_run_resources(run)
+    active_runs[buf] = nil
+    vim.notify('itchy: failed to start execution: ' .. tostring(handle_or_err), vim.log.levels.ERROR, { title = 'itchy' })
+    return
+  end
+  run.handle = handle_or_err
+  if run.handle == nil then
+    cleanup_run_resources(run)
+    active_runs[buf] = nil
+    vim.notify('itchy: failed to spawn process', vim.log.levels.ERROR, { title = 'itchy' })
+    return
   end
 end
 
@@ -280,13 +424,12 @@ end
 ---@param buf? integer
 function M.clear(buf)
   buf = buf or vim.api.nvim_get_current_buf()
-  local ft = vim.bo[buf].filetype
-  local namespaces = vim.api.nvim_get_namespaces()
-  local ns_id = namespaces['itchy_' .. ft .. '_result']
-  if not ns_id then
+  if not vim.api.nvim_buf_is_valid(buf) then
     return
   end
-  vim.api.nvim_buf_clear_namespace(buf, ns_id, 0, -1)
+  -- Cancel/invalidate active work so delayed completions cannot recreate
+  -- virtual lines, then clear the namespace.
+  invalidate_run(buf, true)
 end
 
 --- Print available runtimes for the current buffer.
@@ -296,6 +439,7 @@ end
 function M.list(cmd, buf)
   buf = buf or vim.api.nvim_get_current_buf()
   local ft = vim.bo[buf].filetype
+  ensure_runtimes(ft)
   local runtime_keys = {}
 
   for key, _ in pairs(runtimes.runtimes[ft] or {}) do
@@ -318,6 +462,7 @@ end
 function M.current(buf)
   buf = buf or vim.api.nvim_get_current_buf()
   local ft = vim.bo[buf].filetype
+  ensure_runtimes(ft)
 
   local runtime, error = runtimes.get_runtime(ft)
   if error then

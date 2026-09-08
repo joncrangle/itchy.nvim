@@ -7,14 +7,6 @@ local filetype_to_extension = {
   typescript = 'ts',
 }
 
-local uv = vim.uv or vim.loop
-
---- Return whether it's Windows
----@return boolean
-function M.is_windows()
-  return uv.os_uname().sysname == 'Windows_NT'
-end
-
 --- Return the extension for a filetype
 ---@param ft string
 ---@return string
@@ -139,23 +131,60 @@ function M.should_filter_line(line)
   return false
 end
 
---- Create a temporary file
+--- Create a temporary source-code file for runtimes requiring a file.
+---Only the source file is created; stdout/stderr are captured via vim.system.
 ---@param ft string
 ---@param wrapped_code string
----@return string, string, string
-function M.create_temp_file(ft, wrapped_code)
-  local stdout_file, stderr_file, code_file
-  stdout_file = vim.fn.tempname()
-  stderr_file = vim.fn.tempname()
-  code_file = vim.fn.tempname()
+---@return string? path returns nil + error on failure
+---@return string? err
+function M.create_temp_code_file(ft, wrapped_code)
+  local base = vim.fn.tempname()
   local extension = M.ft_to_ext(ft)
-  code_file = code_file .. '.' .. extension
-  local file = io.open(code_file, 'w')
-  if file then
-    file:write(wrapped_code)
-    file:close()
+  local code_file = base .. '.' .. extension
+  local file, open_err = io.open(code_file, 'w')
+  if not file then
+    return nil, open_err or ('failed to create temp file: ' .. code_file)
   end
-  return stdout_file, stderr_file, code_file
+  file:write(wrapped_code)
+  file:close()
+  return code_file, nil
+end
+
+--- Remove a temporary file exactly once (harmless if missing).
+---@param path? string
+function M.remove_temp_file(path)
+  if type(path) ~= 'string' or path == '' then
+    return
+  end
+  pcall(os.remove, path)
+end
+
+--- Iterate every non-empty line of captured process output, including a
+---final line without a trailing newline. Normalizes CRLF/CR.
+---@param text string?
+---@param fn fun(line: string)
+function M.process_output_text(text, fn)
+  if type(text) ~= 'string' or text == '' then
+    return
+  end
+  text = text:gsub('\r\n', '\n'):gsub('\r', '\n')
+  local start = 1
+  while true do
+    local nl = text:find('\n', start, true)
+    if nl then
+      local line = text:sub(start, nl - 1)
+      if line ~= '' then
+        fn(line)
+      end
+      start = nl + 1
+    else
+      local rest = text:sub(start)
+      if rest ~= '' then
+        fn(rest)
+      end
+      break
+    end
+  end
 end
 
 --- Process a single output line.
@@ -225,14 +254,26 @@ function M.process_error(line, errors_by_line, ft, line_count, line_mapping)
 end
 
 --- Apply collected outputs and errors as extmarks.
+---Stale/current-run validity is checked inside the scheduled callback so a
+---run that becomes stale between scheduling and rendering cannot publish.
 ---@param buf integer
 ---@param namespace integer
 ---@param outputs_by_line table
 ---@param errors_by_line table
-function M.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line)
+---@param is_current? fun(): boolean guard; when provided and returns false, rendering is skipped
+function M.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line, is_current)
   local hl_stdout = config.cfg.highlights.stdout
   local hl_stderr = config.cfg.highlights.stderr
   vim.schedule(function()
+    if type(is_current) == 'function' then
+      local ok, current = pcall(is_current)
+      if not ok or not current then
+        return
+      end
+    end
+    if not vim.api.nvim_buf_is_valid(buf) then
+      return
+    end
     for row, output in pairs(outputs_by_line) do
       local is_error = output:match 'ItchyError'
       local cleaned_output = is_error and output:gsub('ItchyError: ', '') or output
@@ -248,33 +289,6 @@ function M.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line)
       })
     end
   end)
-end
-
---- Create a line-by-line processing handler for a stream.
----@param process_fn fun(string)
----@return fun(err: string|nil, data: string|nil)
-function M.create_stream_handler(process_fn)
-  local partial_line = ''
-
-  return function(err, data)
-    if err then
-      vim.schedule(function()
-        vim.notify('Stream error: ' .. err, vim.log.levels.ERROR)
-      end)
-      return
-    end
-
-    if data then
-      local all_data = partial_line .. data
-      for line in all_data:gmatch '([^\n]*)\n?' do
-        if line == '' then
-          partial_line = line
-        else
-          process_fn(line)
-        end
-      end
-    end
-  end
 end
 
 --- Setup snacks integration for a specific filetype.

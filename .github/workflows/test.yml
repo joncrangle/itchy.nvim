@@ -15,7 +15,9 @@ on:
       - ".github/workflows/test.yml"
 
 jobs:
-  test:
+  # Sync strategy: the callback-based vim.system backend on the 0.11
+  # compatibility floor, across all supported OSes.
+  test-sync:
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +43,7 @@ jobs:
           sudo luarocks install luacheck
           sudo apt-get install -y python3 nodejs npm zsh
           curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
           curl -fsSL https://deno.land/x/install/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
           curl -fsSL https://bun.sh/install | bash
@@ -98,6 +101,37 @@ jobs:
           path: .tests
           key: ${{ runner.os }}-tests-${{ hashFiles('tests/minit.lua') }}
 
+      - name: Cache interpreter artifacts (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/uv
+            ~/.cache/deno
+            ~/.bun/install/cache
+          key: ubuntu-interp-${{ hashFiles('tests/test_files/**') }}
+          restore-keys: |
+            ubuntu-interp-
+
+      - name: Warm Go build cache (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (Get-Command go -ErrorAction SilentlyContinue) {
+            $env:GO111MODULE = 'off'
+            go build -o NUL tests/test_files/go.go
+          }
+
+      - name: Assert expected backend is selected
+        if: matrix.os != 'windows-latest'
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
+      - name: Assert expected backend is selected (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
       - name: Run tests (Unix)
         if: matrix.os != 'windows-latest'
         run: nvim -l tests/minit.lua --minitest
@@ -105,4 +139,60 @@ jobs:
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        run: nvim -l tests/minit.lua --minitest
+
+  # Async strategy: the vim.async backend. Nightly provides 0.13+ today and
+  # keeps tracking post-release development, so this needs no edits when
+  # 0.13 ships. Ubuntu only: the Task/closable machinery is OS-independent
+  # Lua, while OS-specific process semantics (including Windows kill
+  # behavior) are covered by the sync matrix above.
+  test-async:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Neovim nightly (0.13-dev)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks python3 nodejs npm zsh
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -fsSL https://deno.land/x/install/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          if ! command -v go &> /dev/null; then
+            wget https://go.dev/dl/go1.24.2.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.24.2.linux-amd64.tar.gz
+            echo "/usr/local/go/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Test Cache
+        uses: actions/cache@v6
+        with:
+          path: .tests
+          key: ubuntu-nightly-tests-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Cache interpreter artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/uv
+            ~/.cache/deno
+            ~/.bun/install/cache
+          key: ubuntu-interp-${{ hashFiles('tests/test_files/**') }}
+          restore-keys: |
+            ubuntu-interp-
+
+      - name: Assert vim.async backend is selected
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
+      - name: Run tests (nightly, async backend)
         run: nvim -l tests/minit.lua --minitest
