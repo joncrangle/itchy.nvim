@@ -10,6 +10,16 @@ end
 
 local api = vim.api
 
+--- Whether the system sh parses the bash-oriented wrapper. dash (the
+--- default sh on Debian/Ubuntu) rejects `function name()` at parse time,
+--- so the wrapper can never run there. Probe once instead of failing.
+local sh_supports_wrapper = (function()
+  local ok, res = pcall(function()
+    return vim.system({ 'sh', '-c', 'function itchy_probe() { :; }; itchy_probe' }, { text = true }):wait()
+  end)
+  return ok and res ~= nil and res.code == 0
+end)()
+
 ---@class itchy.TestCase
 ---@field path string
 ---@field runtimes string[]
@@ -202,6 +212,11 @@ for ft, test_case in pairs(test_cases) do
       it(('with runtime %s'):format(rt), function()
         if not runtimes.runtimes[ft] or not runtimes.runtimes[ft][rt] then
           pending(('Runtime %s not available for %s'):format(rt, ft))
+          return
+        end
+
+        if ft == 'sh' and not sh_supports_wrapper then
+          pending('system sh is dash; the wrapper requires bash')
           return
         end
 

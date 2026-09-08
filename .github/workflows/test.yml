@@ -99,6 +99,15 @@ jobs:
           path: .tests
           key: ${{ runner.os }}-tests-${{ hashFiles('tests/minit.lua') }}
 
+      - name: Warm Go build cache (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (Get-Command go -ErrorAction SilentlyContinue) {
+            $env:GO111MODULE = 'off'
+            go build -o NUL tests/test_files/go.go
+          }
+
       - name: Run tests (Unix)
         if: matrix.os != 'windows-latest'
         run: nvim -l tests/minit.lua --minitest
