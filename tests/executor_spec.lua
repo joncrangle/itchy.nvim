@@ -221,9 +221,6 @@ describe('itchy.executor.system execution', function()
 end)
 
 describe('itchy buffer-owned execution lifecycle', function()
-  local itchy = require('itchy')
-  local api = vim.api
-
   local fake = nil
 
   local function install_fake()
@@ -286,6 +283,13 @@ describe('itchy buffer-owned execution lifecycle', function()
   end
 
   before_each(function()
+    -- See runtimes_spec: other files reset package.loaded between tests.
+    -- Refresh here so the registry below and itchy.run() share instances.
+    package.loaded['itchy'] = nil
+    package.loaded['itchy.runtimes'] = nil
+    itchy = require 'itchy'
+    runtimes = require 'itchy.runtimes'
+
     itchy._reset_runs()
     runtimes.runtimes['itchytest'] = {
       fake = {

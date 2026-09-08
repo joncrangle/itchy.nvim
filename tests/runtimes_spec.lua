@@ -1,4 +1,5 @@
 local itchy = require 'itchy'
+local runtimes = require 'itchy.runtimes'
 local assert = require 'luassert'
 
 local pending = pending or function(message)
@@ -180,14 +181,21 @@ end
 for ft, test_case in pairs(test_cases) do
   describe('Itchy run for ' .. ft, function()
     local buf
-    local runtimes = require 'itchy.runtimes'
 
     before_each(function()
+      -- Other spec files reset package.loaded between tests, which orphans
+      -- module instances captured at file-load time. Re-require here so the
+      -- registry below and itchy.run() observe the same live instances.
+      package.loaded['itchy'] = nil
+      package.loaded['itchy.runtimes'] = nil
+      itchy = require 'itchy'
+      runtimes = require 'itchy.runtimes'
+
       local content = read_file(test_case.path)
       assert(content, 'Failed to read test file: ' .. test_case.path)
 
       buf = setup_test_buffer(ft, content)
-      require('itchy.runtimes').load_runtimes()
+      runtimes.load_runtimes()
     end)
 
     for _, rt in ipairs(test_case.runtimes) do
@@ -213,8 +221,8 @@ for ft, test_case in pairs(test_cases) do
         assert(ns_wait_success, 'Namespace was not created within timeout')
         local ns_id = vim.api.nvim_get_namespaces()[namespace_name]
 
-        -- Wait for the extmarks
-        local initial_wait_success = vim.wait(5000, function()
+        -- Wait for the extmarks (generous: cold `go run` compiles on CI)
+        local initial_wait_success = vim.wait(30000, function()
           local extmarks = get_extmark_text(buf, ns_id)
           return #extmarks > 0
         end, 50)
