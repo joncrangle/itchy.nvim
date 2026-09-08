@@ -15,10 +15,15 @@ function M.execute(request, callback)
   local completed = false
   ---@type vim.SystemObj?
   local sys_obj = nil
+  ---@type vim.async.Task?
+  local task = nil
 
   local state = {
     closing = false,
+    exited = false,
     done = false,
+    result = nil,
+    resolve = nil,
     ---@type fun()[]
     close_cbs = {},
   }
@@ -51,6 +56,33 @@ function M.execute(request, callback)
     end
   end
 
+  -- Process exit is observed here, but resumption and close-completion run
+  -- on the main loop: vim.system may invoke on_exit in a fast-event
+  -- context, where resuming the task coroutine would fail and strand the
+  -- task (and its temp files) forever.
+  local function raw_on_exit(res)
+    if state.exited then
+      return
+    end
+    state.exited = true
+    state.result = res
+    vim.schedule(function()
+      if state.done then
+        return
+      end
+      state.done = true
+      if state.closing then
+        drain_close_cbs()
+        return
+      end
+      local resolve = state.resolve
+      state.resolve = nil
+      if resolve then
+        resolve(res)
+      end
+    end)
+  end
+
   -- Closable adapter: Task:close() closes this while the task is suspended
   -- in vim.async.await(). Race-safe for immediate exit, immediate cancel,
   -- near-simultaneous exit/cancel, and repeated close().
@@ -61,83 +93,116 @@ function M.execute(request, callback)
       end,
       close = function(_, cb)
         if cb then
-          if state.done then
-            pcall(cb)
-            return
-          end
           table.insert(state.close_cbs, cb)
-        end
-        if state.done then
-          return
         end
         if not state.closing then
           state.closing = true
           cancelled = true
-          if sys_obj then
+          if sys_obj and not state.exited then
             pcall(function()
               sys_obj:kill('sigterm')
             end)
           end
         end
-        if state.done and cb then
-          -- on_exit already ran between the checks above.
+        if state.exited then
+          -- Process already gone; unblock the closer now. The scheduled
+          -- on_exit body re-checks flags and stays silent.
           drain_close_cbs()
         end
       end,
     }
   end
 
-  local task = async.run(function()
-    -- Suspend without blocking; never use SystemObj:wait() here.
-    local result = async.await(function(resolve)
-      local closable = make_closable()
+  local handle = {}
 
-      local ok, obj_or_err = pcall(
-        vim.system,
-        request.cmd,
-        {
-          cwd = request.cwd,
-          env = request.env and next(request.env) ~= nil and request.env or nil,
-          text = true,
-        },
-        function(res)
-          if state.done then
-            return
-          end
-          state.done = true
-          if state.closing then
-            -- Cancelled: let the task report "closed" instead of the
-            -- killed-process result; unblock Task:close().
-            drain_close_cbs()
-            return
-          end
-          resolve(res)
-          -- If close() arrived between resolve and now, unblock it.
-          if state.closing then
-            drain_close_cbs()
-          end
-        end
-      )
+  function handle:cancel()
+    if completed or cancelled then
+      return
+    end
+    cancelled = true
+    state.closing = true
+    if task then
+      pcall(function()
+        task:close()
+      end)
+    end
+    if sys_obj and not state.exited then
+      pcall(function()
+        sys_obj:kill('sigterm')
+      end)
+    end
+  end
 
-      if not ok then
-        state.done = true
-        error(obj_or_err, 0)
-      end
-
-      sys_obj = obj_or_err
-      -- Cancellation arrived synchronously before SystemObj assignment.
-      if state.closing and sys_obj then
-        pcall(function()
-          sys_obj:kill('sigterm')
-        end)
-      end
-
-      return closable
+  function handle:is_running()
+    if completed or cancelled then
+      return false
+    end
+    if task == nil then
+      return false
+    end
+    local ok, done = pcall(function()
+      return task:completed()
     end)
+    if ok then
+      return not done
+    end
+    return true
+  end
 
+  -- Spawn outside the task: a spawn failure is reported through the normal
+  -- callback instead of thrown from inside the await callback, where the
+  -- task machinery could strand it.
+  local spawn_ok, obj_or_err = pcall(vim.system, request.cmd, {
+    cwd = request.cwd,
+    env = request.env and next(request.env) ~= nil and request.env or nil,
+    text = true,
+  }, raw_on_exit)
+
+  if not spawn_ok then
+    local spawn_err = obj_or_err
+    vim.schedule(function()
+      finish_once(spawn_err, nil)
+    end)
+    return handle
+  end
+
+  sys_obj = obj_or_err
+  -- Cancellation arrived synchronously during spawn.
+  if state.closing and sys_obj then
+    pcall(function()
+      sys_obj:kill('sigterm')
+    end)
+  end
+
+  -- Suspend without blocking; never use SystemObj:wait() here.
+  local task_ok, task_or_err = pcall(async.run, function()
+    local result = async.await(function(resolve)
+      if state.closing then
+        -- Cancelled before awaiting; the runtime closes our closable.
+      elseif state.done then
+        resolve(state.result)
+      else
+        state.resolve = resolve
+      end
+      return make_closable()
+    end)
     return result
   end)
 
+  if not task_ok then
+    local task_err = task_or_err
+    if sys_obj and not state.exited then
+      pcall(function()
+        sys_obj:kill('sigterm')
+      end)
+    end
+    vim.schedule(function()
+      finish_once(task_err, nil)
+    end)
+    return handle
+  end
+
+  task = task_or_err
   task:on_complete(function(err, result)
     if cancelled or state.closing then
       -- Closed before producing a result: report cancellation like the
@@ -160,37 +225,6 @@ function M.execute(request, callback)
       stderr = result.stderr or '',
     })
   end)
-
-  local handle = {}
-
-  function handle:cancel()
-    if completed or cancelled then
-      return
-    end
-    cancelled = true
-    state.closing = true
-    pcall(function()
-      task:close()
-    end)
-    if sys_obj and not state.done then
-      pcall(function()
-        sys_obj:kill('sigterm')
-      end)
-    end
-  end
-
-  function handle:is_running()
-    if completed or cancelled then
-      return false
-    end
-    local ok, done = pcall(function()
-      return task:completed()
-    end)
-    if ok then
-      return not done
-    end
-    return true
-  end
 
   return handle
 end

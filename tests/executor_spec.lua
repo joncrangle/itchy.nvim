@@ -251,6 +251,9 @@ describe('itchy buffer-owned execution lifecycle', function()
   end
 
   local function uninstall_fake()
+    if fake == nil then
+      return
+    end
     require('itchy.executor').execute = fake.original
     fake = nil
   end
