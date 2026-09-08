@@ -106,3 +106,36 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: nvim -l tests/minit.lua --minitest
+
+  backend-async:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Neovim nightly (0.13-dev)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks python3 nodejs npm zsh
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          curl -fsSL https://deno.land/x/install/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+
+      - name: Test Cache
+        uses: actions/cache@v6
+        with:
+          path: .tests
+          key: ubuntu-nightly-tests-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Assert vim.async backend is selected
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
+      - name: Run tests (nightly, async backend)
+        run: nvim -l tests/minit.lua --minitest
