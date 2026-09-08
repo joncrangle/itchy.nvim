@@ -1,5 +1,5 @@
 *itchy.nvim.txt*
-                                       For Neovim    Last change: 2026 June 22
+                                  For Neovim    Last change: 2026 September 08
 
 ==============================================================================
 Table of Contents                               *itchy.nvim-table-of-contents*
@@ -7,6 +7,7 @@ Table of Contents                               *itchy.nvim-table-of-contents*
 1. itchy.nvim                                          |itchy.nvim-itchy.nvim|
   - Features                                  |itchy.nvim-itchy.nvim-features|
   - Supported languages / runtimes|itchy.nvim-itchy.nvim-supported-languages-/-runtimes|
+  - Execution                                |itchy.nvim-itchy.nvim-execution|
   - Installation                          |itchy.nvim-itchy.nvim-installation|
   - Usage                                        |itchy.nvim-itchy.nvim-usage|
   - Configuration                        |itchy.nvim-itchy.nvim-configuration|
@@ -37,6 +38,24 @@ SUPPORTED LANGUAGES / RUNTIMES*itchy.nvim-itchy.nvim-supported-languages-/-runti
 - Python: `python`, `uv`
 - Shell scripts: `bash`, `sh`, `zsh`
 - Windows scripts: `dosbatch` (very buggy), `pwsh`, `powershell`
+
+
+EXECUTION                                    *itchy.nvim-itchy.nvim-execution*
+
+Subprocesses run through `vim.system()` with argv-style arguments (no shell
+string building), so arguments with spaces or special characters are passed
+through correctly. Runtime environment variables (e.g. Go’s `GO111MODULE`)
+are applied to the child process only and never leak into Neovim.
+
+- Neovim 0.11 and 0.12 use a callback-based `vim.system()` execution path.
+- Neovim 0.13+ automatically uses `vim.async` structured concurrency to own
+    the subprocess, await completion, and cancel it.
+- No configuration is required; backend selection is automatic. Neovim 0.13
+    is not required to use the plugin.
+
+Each buffer owns at most one execution: starting a new run supersedes the
+previous one, and clearing, editing, or deleting the buffer cancels active work
+so stale results can never overwrite newer output.
 
 
 INSTALLATION                              *itchy.nvim-itchy.nvim-installation*
