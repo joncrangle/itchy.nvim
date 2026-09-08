@@ -99,6 +99,19 @@ jobs:
           path: .tests
           key: ${{ runner.os }}-tests-${{ hashFiles('tests/minit.lua') }}
 
+      - name: Cache interpreter artifacts (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/uv
+            ~/.cache/deno
+            ~/.bun/install/cache
+          key: ubuntu-interp-${{ hashFiles('tests/test_files/**') }}
+          restore-keys: |
+            ubuntu-interp-
+
       - name: Warm Go build cache (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -107,6 +120,15 @@ jobs:
             $env:GO111MODULE = 'off'
             go build -o NUL tests/test_files/go.go
           }
+
+      - name: Assert expected backend is selected
+        if: matrix.os != 'windows-latest'
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
+      - name: Assert expected backend is selected (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
 
       - name: Run tests (Unix)
         if: matrix.os != 'windows-latest'
@@ -117,6 +139,61 @@ jobs:
         shell: pwsh
         run: nvim -l tests/minit.lua --minitest
 
+  # Tracks the latest stable release: exercises the fallback backend while
+  # stable is pre-0.13, and vim.async once 0.13 ships -- no edits needed.
+  test-stable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Neovim stable
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks python3 nodejs npm zsh
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -fsSL https://deno.land/x/install/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          if ! command -v go &> /dev/null; then
+            wget https://go.dev/dl/go1.24.2.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.24.2.linux-amd64.tar.gz
+            echo "/usr/local/go/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Test Cache
+        uses: actions/cache@v6
+        with:
+          path: .tests
+          key: ubuntu-stable-tests-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Cache interpreter artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/uv
+            ~/.cache/deno
+            ~/.bun/install/cache
+          key: ubuntu-interp-${{ hashFiles('tests/test_files/**') }}
+          restore-keys: |
+            ubuntu-interp-
+
+      - name: Assert expected backend is selected
+        run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
+
+      - name: Run tests (stable)
+        run: nvim -l tests/minit.lua --minitest
+
+  # Tracks the development version ("next"): permanently exercises the
+  # newest backend. Never needs edits when releases ship.
   backend-async:
     runs-on: ubuntu-latest
     steps:
@@ -138,12 +215,29 @@ jobs:
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
           curl -fsSL https://bun.sh/install | bash
           echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          if ! command -v go &> /dev/null; then
+            wget https://go.dev/dl/go1.24.2.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.24.2.linux-amd64.tar.gz
+            echo "/usr/local/go/bin" >> $GITHUB_PATH
+          fi
 
       - name: Test Cache
         uses: actions/cache@v6
         with:
           path: .tests
           key: ubuntu-nightly-tests-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Cache interpreter artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/uv
+            ~/.cache/deno
+            ~/.bun/install/cache
+          key: ubuntu-interp-${{ hashFiles('tests/test_files/**') }}
+          restore-keys: |
+            ubuntu-interp-
 
       - name: Assert vim.async backend is selected
         run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
