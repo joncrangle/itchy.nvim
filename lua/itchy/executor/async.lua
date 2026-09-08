@@ -86,6 +86,13 @@ function M.execute(request, callback)
   -- Closable adapter: Task:close() closes this while the task is suspended
   -- in vim.async.await(). Race-safe for immediate exit, immediate cancel,
   -- near-simultaneous exit/cancel, and repeated close().
+  --
+  -- NOTE: the runtime also closes the closable as post-completion cleanup
+  -- after a successful resolve. That close must NOT mark cancellation, or
+  -- the completed result would be dropped as 'cancelled' in on_complete.
+  -- Genuine user cancellation always flows through handle:cancel(), which
+  -- sets the flags directly, so treating post-completion closes as no-ops
+  -- loses nothing.
   local function make_closable()
     return {
       is_closing = function()
@@ -94,6 +101,12 @@ function M.execute(request, callback)
       close = function(_, cb)
         if cb then
           table.insert(state.close_cbs, cb)
+        end
+        if state.done then
+          -- Operation already finished; unblock the closer without
+          -- touching the cancellation flags.
+          drain_close_cbs()
+          return
         end
         if not state.closing then
           state.closing = true
