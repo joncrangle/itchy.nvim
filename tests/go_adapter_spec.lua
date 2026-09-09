@@ -469,4 +469,78 @@ describe('itchy.adapters.go', function()
       eq(found.message, 'sel')
     end)
   end)
+
+  it('wraps bare fragments using non-instrumented fmt APIs', function()
+    -- fmt.Sprintf is never rewritten, but the fragment still needs the
+    -- import to compile (regression: plain-search for "fmt%." never fired).
+    local src = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n'
+    local prepared = go_adapter.prepare(ctx_for(src))
+    with_cleanup(prepared, nil, function()
+      local f = io.open(prepared.metadata.user_file, 'r')
+      assert(f ~= nil)
+      local content = f:read('*a')
+      f:close()
+      truthy(content:find('import "fmt"', 1, true) ~= nil)
+      truthy(content:find('fmt.Sprintf', 1, true) ~= nil)
+    end)
+  end)
+
+  it('wraps bare fragments using non-Print log APIs', function()
+    local src = 'log.Fatal("boom")\n'
+    local prepared = go_adapter.prepare(ctx_for(src))
+    with_cleanup(prepared, nil, function()
+      local f = io.open(prepared.metadata.user_file, 'r')
+      assert(f ~= nil)
+      local content = f:read('*a')
+      f:close()
+      truthy(content:find('import "log"', 1, true) ~= nil)
+    end)
+  end)
+
+  it('ignores fmt-like text in comments and strings when wrapping', function()
+    -- "catalog." contains "log." and the comment names fmt.Println: neither
+    -- is a use, so no unused import may be added (that would fail the build).
+    local src = '// see fmt.Println docs\nfmt.Println("see catalog.")\n'
+    local prepared = go_adapter.prepare(ctx_for(src))
+    with_cleanup(prepared, nil, function()
+      local f = io.open(prepared.metadata.user_file, 'r')
+      assert(f ~= nil)
+      local content = f:read('*a')
+      f:close()
+      truthy(content:find('import "fmt"', 1, true) ~= nil)
+      falsy(content:find('import "log"', 1, true) ~= nil)
+    end)
+    falsy(go_adapter._code_uses_package('// fmt.Println("comment")', 'fmt'))
+    falsy(go_adapter._code_uses_package('s := "log.Fatal(\\"x\\")"', 'log'))
+    truthy(go_adapter._code_uses_package('x := fmt.Sprintf("%d", 1)', 'fmt'))
+  end)
+
+  it('executes bare fragments using non-instrumented fmt APIs end to end', function()
+    if vim.fn.executable('go') ~= 1 then
+      return
+    end
+    local src = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n'
+    local ctx = {
+      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      filetype = 'go',
+      source = src,
+      buf = 1,
+      cwd = '.',
+    }
+    local prepared = go_adapter.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = vim.system(prepared.cmd, { text = true, timeout = 60000, env = { GO111MODULE = 'off' } }):wait()
+      local events = go_adapter.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(out.code, 0)
+      local found = nil
+      for _, e in ipairs(events) do
+        if e.kind == 'stdout' then
+          found = e
+        end
+      end
+      assert(found ~= nil)
+      eq(found.line, 2)
+      eq(found.message, '42')
+    end)
+  end)
 end)

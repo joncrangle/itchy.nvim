@@ -114,8 +114,13 @@ M.available_runtimes = {
     cmd = M.create_runtime('dosbatch', 'cmd', { '/c' }),
   },
   ps1 = {
-    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }, 0, false, nil, 'powershell'),
-    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }, 0, false, nil, 'powershell'),
+    -- -ExecutionPolicy Bypass: Windows client SKUs default to Restricted,
+    -- which refuses to run even local temp-file scripts (no virtual lines
+    -- at all, only a SecurityError on stderr); Bypass is a no-op where
+    -- scripts already run (macOS/Linux, pwsh defaults). The powershell
+    -- adapter swaps the trailing -Command for -File <launcher>.
+    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 0, false, nil, 'powershell'),
+    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 0, false, nil, 'powershell'),
   },
 }
 

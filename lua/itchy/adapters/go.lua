@@ -257,6 +257,76 @@ end
 M._instrument_lexer = instrument_lexer
 M._instrument_ts = instrument_ts
 
+--- Whether real code (outside comments/strings/runes/raw strings) references
+--- `pkg.` as a selector (`fmt.Sprintf`, `log.New`, ...). A plain substring
+--- search is wrong here: `"catalog."` contains `"log."` and a comment
+--- mentioning `fmt.Println` is not a use. Either mistake adds (or withholds)
+--- an import the fragment needs to compile, or defeats the keep-import check
+--- below by seeing `fmt.` where only a comment does.
+---@param source string
+---@param pkg string "fmt" or "log"
+---@return boolean
+local function code_uses_package(source, pkg)
+	local n = #source
+	local plen = #pkg
+	local function is_ident(b)
+		return b ~= nil
+			and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95)
+	end
+	local function is_gap(b)
+		return b == 32 or b == 9
+	end
+	-- First byte after a quoted span starting at start (backslash escapes).
+	local function skip_quoted(start, q)
+		local j = start + 1
+		while j <= n do
+			local c = source:byte(j)
+			if c == 92 then
+				j = j + 2
+			elseif c == q then
+				return j + 1
+			else
+				j = j + 1
+			end
+		end
+		return n + 1
+	end
+	local i = 1
+	while i <= n do
+		local b = source:byte(i)
+		if b == 47 and source:byte(i + 1) == 47 then -- '//' line comment
+			i = source:find("\n", i, true) or (n + 1)
+		elseif b == 47 and source:byte(i + 1) == 42 then -- '/*' block comment
+			local e = source:find("*/", i + 2, true)
+			i = (e and (e + 1) or n) + 1
+		elseif b == 34 or b == 39 then -- string / rune literal
+			i = skip_quoted(i, b)
+		elseif b == 96 then -- raw string: no escapes
+			local e = source:find("`", i + 1, true)
+			i = e and (e + 1) or (n + 1)
+		elseif source:sub(i, i + plen - 1) == pkg then
+			local prev = i > 1 and source:byte(i - 1) or nil
+			if prev ~= nil and (is_ident(prev) or prev == 46) then
+				i = i + 1 -- `xfmt.` / `x.fmt.`: not a package reference
+			else
+				local j = i + plen
+				while j <= n and is_gap(source:byte(j)) do
+					j = j + 1
+				end
+				if source:byte(j) == 46 then -- '.'
+					return true
+				end
+				i = j
+			end
+		else
+			i = i + 1
+		end
+	end
+	return false
+end
+
+M._code_uses_package = code_uses_package
+
 --- Instrument with Tree-sitter when available, else the embedded scanner.
 --- Never fails and never touches the legacy wrapper.
 ---@param source string
@@ -283,8 +353,11 @@ end
 ---@param source string
 ---@return string, integer
 local function wrap_fragment(source)
-	local needs_fmt = source:find("fmt%.", 1, true) ~= nil
-	local needs_log = source:find("log%.", 1, true) ~= nil
+	-- Code-aware package detection (see code_uses_package): a plain
+	-- `"fmt."` substring search would fire on `"catalog."` or on comments,
+	-- adding an unused import that fails the fragment build.
+	local needs_fmt = code_uses_package(source, "fmt")
+	local needs_log = code_uses_package(source, "log")
 	local header = { "package main", "" }
 	if needs_fmt then
 		table.insert(header, 'import "fmt"')
@@ -474,8 +547,11 @@ function M.prepare(ctx)
 	-- Keep explicit imports used: replacing every fmt/log call can leave the
 	-- import unused (a per-file compile error). Appending a package-level
 	-- blank reference after the user code preserves all existing line numbers.
-	for _, keep in ipairs({ { '"fmt"', "fmt%.", "fmt.Sprint" }, { '"log"', "log%.", "log.Print" } }) do
-		if base:find(keep[1], 1, true) ~= nil and instrumented:find(keep[2], 1, true) == nil then
+	-- Code-aware like wrap_fragment: a `fmt.` inside a comment or string
+	-- must not count as a use, or the keep would be skipped and the build
+	-- would fail on an unused import.
+	for _, keep in ipairs({ { '"fmt"', "fmt", "fmt.Sprint" }, { '"log"', "log", "log.Print" } }) do
+		if base:find(keep[1], 1, true) ~= nil and not code_uses_package(instrumented, keep[2]) then
 			instrumented = instrumented .. "\nvar _ = " .. keep[3] .. " // itchy: keep import used\n"
 		end
 	end

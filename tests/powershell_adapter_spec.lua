@@ -42,6 +42,19 @@ describe('itchy.adapters.powershell', function()
     eq(adapters.resolve({ adapter = 'powershell' }).name, 'powershell')
   end)
 
+  it('prepare() keeps unknown runtime args such as Bypass', function()
+    local ctx = ctx_for('Write-Output "hi"\n')
+    ctx.runtime.args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      -- Windows client SKUs default to Restricted, which refuses temp-file
+      -- scripts; the Bypass flag must survive the -Command -> -File swap.
+      local joined = table.concat(prepared.cmd, ' ')
+      truthy(joined:find('-ExecutionPolicy Bypass', 1, true) ~= nil)
+      eq(prepared.cmd[#prepared.cmd - 1], '-File')
+    end)
+  end)
+
   it('prepare() keeps user lines stable with an appended trap', function()
     local source = 'Write-Output "one"\nfunction Foo {\n  Write-Host "inside"\n}\nFoo\n'
     local prepared = ps.prepare(ctx_for(source))
@@ -360,6 +373,199 @@ describe('itchy.adapters.powershell', function()
       assert(found ~= nil)
       eq(found.line, 1)
       eq(found.message, 'winps')
+    end)
+  end)
+
+  it('preserves Write-Output pipeline assignment end to end', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    -- Stream behavior (#13): Write-Output must feed the success pipeline.
+    local src = '$x = Write-Output 123\nWrite-Output $x\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(#events, 2)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, 1)
+      eq(events[1].message, '123')
+      -- Without delegation $x is $null and this renders empty.
+      eq(events[2].line, 2)
+      eq(events[2].message, '123')
+    end)
+  end)
+
+  it('flows Write-Output through downstream pipeline stages', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    local src = 'Write-Output 1 | ForEach-Object { $_ + 1 }\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      local framed, downstream = nil, nil
+      for _, e in ipairs(events) do
+        if e.line == 1 then
+          framed = e
+        elseif e.message == '2' then
+          downstream = e
+        end
+      end
+      assert(framed ~= nil)
+      eq(framed.message, '1')
+      -- The stage result is real program output: it must still surface
+      -- (locationless), not vanish inside a swallowing proxy.
+      assert(downstream ~= nil)
+      eq(downstream.kind, 'stdout')
+    end)
+  end)
+
+  it('accepts pipeline input in Write-Error and Write-Warning', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    local src = '"oops-pipe" | Write-Error\n"warn-pipe" | Write-Warning\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      -- Exactly the two framed diagnostics: piped input must not come out
+      -- empty, and must not trip parameter-binding errors on stderr.
+      eq(#events, 2)
+      eq(events[1].kind, 'error')
+      eq(events[1].line, 1)
+      eq(events[1].message, 'oops-pipe')
+      eq(events[2].kind, 'warning')
+      eq(events[2].line, 2)
+      eq(events[2].message, 'warn-pipe')
+    end)
+  end)
+
+  it('reports -ErrorAction Stop once and keeps the resilience trap', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    local src = 'Write-Error "oops" -ErrorAction Stop\nWrite-Output "after"\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      -- The proxy reports before delegating and the trap reports the
+      -- terminating throw: one instance, one virtual line. Execution still
+      -- continues afterwards (documented resilience behavior, as for throw).
+      eq(#events, 2)
+      eq(events[1].kind, 'error')
+      eq(events[1].line, 1)
+      eq(events[1].message, 'oops')
+      eq(events[2].kind, 'stdout')
+      eq(events[2].line, 2)
+      eq(events[2].message, 'after')
+    end)
+  end)
+
+  it('keeps named Write-Error parameters out of the message', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    local src = 'Write-Error -Message "x" -Category InvalidOperation\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      local found = nil
+      for _, e in ipairs(events) do
+        if e.kind == 'error' and e.line == 1 then
+          found = e
+        end
+      end
+      assert(found ~= nil)
+      eq(found.message, 'x')
+    end)
+  end)
+
+  it('records delegated errors in $Error', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    local src = 'Write-Error "rec-me"\nWrite-Output $Error.Count\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(#events, 2)
+      eq(events[1].kind, 'error')
+      eq(events[1].message, 'rec-me')
+      -- The error stream record exists: a swallowing proxy leaves $Error empty.
+      eq(events[2].line, 2)
+      eq(events[2].message, '1')
+    end)
+  end)
+
+  it('folds multi-object delegation echoes into one event', function()
+    if vim.fn.executable('pwsh') ~= 1 then
+      return
+    end
+    -- `echo a b c` reports once ("a b c") while the native delegation prints
+    -- three success-stream lines; the echoes must not surface as extra output.
+    local src = 'echo Echo from PowerShell\n'
+    local ctx = ctx_for(src)
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local out = run_cmd(prepared)
+      local events = ps.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(#events, 1)
+      eq(events[1].line, 1)
+      eq(events[1].message, 'Echo from PowerShell')
+    end)
+  end)
+
+  it('parses Windows PowerShell 5.1 classic error records', function()
+    local ctx = ctx_for('')
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      -- 5.1 has no `path.ps1:LINE` frame or `|` details: the header carries
+      -- the message, `+ CategoryInfo` rows are metadata, never content.
+      local result = {
+        code = 1,
+        signal = 0,
+        stdout = '',
+        stderr = 'Write-Error : oops-51\n'
+          .. '    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException\n'
+          .. '    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException\n',
+      }
+      local events = ps.decode(ctx, prepared, result)
+      eq(#events, 1)
+      eq(events[1].kind, 'error')
+      eq(events[1].line, nil)
+      eq(events[1].message, 'oops-51')
+    end)
+  end)
+
+  it('parses Windows PowerShell 5.1 At-line locations', function()
+    local ctx = ctx_for('')
+    local prepared = ps.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local user_file = prepared.metadata.user_file
+      local result = {
+        code = 1,
+        signal = 0,
+        stdout = '',
+        stderr = 'At ' .. user_file .. ':2 char:11\n' .. 'Unexpected token\n',
+      }
+      local events = ps.decode(ctx, prepared, result)
+      eq(#events, 1)
+      eq(events[1].kind, 'error')
+      eq(events[1].line, 2)
+      eq(events[1].column, 11)
+      eq(events[1].message, 'Unexpected token')
     end)
   end)
 end)
