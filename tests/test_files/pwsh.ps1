@@ -2,43 +2,49 @@ Write-Host "Hello from PowerShell"
 echo Echo from PowerShell
 
 # Function definition with error handling
-function Divide-Numbers {
+function Divide-Numbers
+{
     param (
         [int]$Numerator,
         [int]$Denominator
     )
     
-    try {
+    try
+    {
         $result = $Numerator / $Denominator
         return $result
-    }
-    catch [System.DivideByZeroException] {
+    } catch [System.DivideByZeroException]
+    {
         Write-Host "Caught division error: Attempted to divide by zero"
         return $null
     }
 }
 
 # Async simulation
-function Test-Async {
+function Test-Async
+{
     Write-Host "Starting async operation..."
     Start-Sleep -Seconds 1
     Write-Host "Async operation complete"
     
-    try {
+    try
+    {
         $null = 1/0
-    }
-    catch {
+    } catch
+    {
         Write-Host "Caught async error: $_"
     }
 }
 
 # File error test
-function Test-FileError {
-    try {
+function Test-FileError
+{
+    try
+    {
         $content = Get-Content -Path "non_existent_file.txt" -ErrorAction Stop
         Write-Host $content
-    }
-    catch {
+    } catch
+    {
         Write-Host "Caught file error: $_"
     }
 }

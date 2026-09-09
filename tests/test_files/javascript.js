@@ -2,13 +2,14 @@ console.log("Hello from JavaScript");
 
 // Runtime error
 function divide(x, y) {
+	if (y === 0) throw new Error("Cannot divide by zero");
 	return x / y;
 }
 
 try {
 	divide(1, 0);
 } catch (e) {
-	console.error("Error:", e);
+	console.error("Error:", e?.message ?? e);
 }
 
 async function main() {
@@ -17,13 +18,16 @@ async function main() {
 	try {
 		divide(1, 0);
 	} catch (e) {
-		console.error("Async error:", e);
+		console.error("Async error:", e?.message ?? e);
 	}
 }
 
 main();
 
-const fs = require("fs");
-fs.readFile("non_existent_file.txt", "utf8", (err, data) => {
-	if (err) console.error("File error:", err);
-});
+// File read error
+try {
+	const fs = await import("node:fs");
+	fs.readFileSync("non_existent_file.txt", "utf8");
+} catch (e) {
+	console.error("File error:", e?.message ?? e);
+}

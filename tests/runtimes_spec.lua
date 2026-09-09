@@ -33,11 +33,11 @@ local test_cases = {
     path = 'tests/test_files/javascript.js',
     expected = {
       'Hello from JavaScript',
+      'Cannot divide by zero',
       'Async operation complete',
+      'Async error: Cannot divide by zero',
       'no such file or directory',
-      'require is not defined',
     },
-    pass_min = 3,
   },
   typescript = {
     runtimes = { 'deno', 'bun', 'node' },
@@ -48,9 +48,7 @@ local test_cases = {
       'Async operation complete',
       'Async error: Cannot divide by zero',
       'no such file or directory',
-      'Relative import path',
     },
-    pass_min = 4,
   },
   go = {
     runtimes = { 'go' },
