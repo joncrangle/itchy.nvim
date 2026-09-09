@@ -365,7 +365,12 @@ function M.run(rt, buf)
     end
     temp_file = path
     table.insert(cmd, path)
-  else
+  elseif not prepared.cmd then
+    -- Legacy adapters hand back a source string to evaluate and rely on the
+    -- core appending it to argv. Adapters that return a complete argv in
+    -- prepared.cmd already materialized their sources, so there is nothing
+    -- to append: an extra element would be a stray multiline argument with
+    -- fragile quoting on some platforms.
     table.insert(cmd, prepared.source)
   end
 

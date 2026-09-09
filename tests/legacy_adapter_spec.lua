@@ -104,15 +104,6 @@ describe('itchy.adapters.legacy', function()
     eq(events[1].line, 8)
   end)
 
-  it('decodes representative Go diagnostics without magic offsets in the adapter API', function()
-    local ctx = { filetype = 'go' }
-    local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = '/tmp/file.go:10:5: undefined: foo\n' })
-    eq(#events, 1)
-    eq(events[1].kind, 'error')
-    -- Legacy correction (line - 2) expressed as a 1-based event.
-    eq(events[1].line, 9)
-  end)
-
   it('decodes representative shell diagnostics', function()
     local ctx = { filetype = 'bash' }
     local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = 'bash: line 3: division by 0\n' })
@@ -128,8 +119,8 @@ describe('itchy.adapters.legacy', function()
     eq(events[1].line, nil)
   end)
 
-  it('decodes unrecognized runtimes (e.g. powershell) via the generic error fallback', function()
-    local ctx = { filetype = 'ps1' }
+  it('decodes unrecognized runtimes (e.g. dosbatch) via the generic error fallback', function()
+    local ctx = { filetype = 'dosbatch' }
     local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = 'some error: bad thing\n' })
     eq(#events, 1)
     eq(events[1].kind, 'error')

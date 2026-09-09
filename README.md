@@ -23,6 +23,12 @@ When you don't _need_ a debugger. Quickly evaluate code and view output as virtu
 - Shell scripts: `bash`, `sh`, `zsh`
 - Windows scripts: `dosbatch` (very buggy), `pwsh`, `powershell`
 
+Go output locations benefit from Tree-sitter: with the `go` parser installed
+(e.g. via [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)),
+output calls are found syntactically, so comments, strings, and similarly
+named methods never match. Without the parser, a built-in fallback keeps the
+same behavior with no extra setup.
+
 ## ⚡ Execution
 
 Subprocesses run through `vim.system()` with argv-style arguments (no shell

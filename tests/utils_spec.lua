@@ -160,4 +160,31 @@ describe('itchy.utils', function()
       error(err, 0)
     end
   end)
+
+  it('make_adapter_tmpdir prefers the project dir and falls back to temp', function()
+    local proj = vim.fn.tempname() .. '_adapterdir'
+    vim.fn.mkdir(proj, 'p')
+    local ok, err = pcall(function()
+      local dir = M.make_adapter_tmpdir(proj, 'itchy-go', 'abc123')
+      truthy(dir:find(proj, 1, true) ~= nil)
+      eq(vim.fn.isdirectory(dir), 1)
+      vim.fn.delete(dir, 'd')
+      local fallback = M.make_adapter_tmpdir(nil, 'itchy-go', 'abc123')
+      truthy(fallback ~= nil and fallback ~= '')
+      eq(vim.fn.isdirectory(fallback), 1)
+      vim.fn.delete(fallback, 'd')
+    end)
+    vim.fn.delete(proj, 'rf')
+    if not ok then
+      error(err, 0)
+    end
+  end)
+
+  it('is_user_file matches user diagnostics and excludes the helper', function()
+    truthy(M.is_user_file('/tmp/x/itchy-user-abc.go', '/tmp/x/itchy-user-abc.go', 'itchy_helper.go'))
+    truthy(M.is_user_file('C:\\tmp\\x\\itchy-user-abc.go', 'C:/tmp/x/itchy-user-abc.go', 'itchy_helper.go'))
+    falsy(M.is_user_file('/tmp/x/itchy_helper.go', '/tmp/x/itchy-user-abc.go', 'itchy_helper.go'))
+    falsy(M.is_user_file('/other/main.go', '/tmp/x/itchy-user-abc.go', 'itchy_helper.go'))
+    falsy(M.is_user_file(nil, '/tmp/x/itchy-user-abc.go', 'itchy_helper.go'))
+  end)
 end)

@@ -211,6 +211,67 @@ function M.project_dir(ctx)
   return nil
 end
 
+--- Create a run-unique temp directory for adapter files (user source plus
+---helper/launcher). Prefers the run working directory so module resolution
+---keeps working; falls back to the OS temp directory. The directory is
+---created before returning.
+---@param dir? string preferred parent directory (e.g. the run cwd)
+---@param prefix string leaf prefix, e.g. 'itchy-go'
+---@param nonce string run nonce for uniqueness
+---@return string tmpdir
+function M.make_adapter_tmpdir(dir, prefix, nonce)
+  if type(dir) == 'string' and dir ~= '' then
+    dir = vim.fn.fnamemodify(dir, ':p'):gsub('[/\\]$', '')
+  end
+  local fallback = vim.fn.tempname() .. '_' .. prefix
+  if type(dir) ~= 'string' or dir == '' then
+    vim.fn.mkdir(fallback, 'p')
+    return fallback
+  end
+  local candidate = dir .. '/' .. prefix .. '-' .. tostring(vim.fn.getpid()) .. '-' .. nonce
+  if vim.fn.mkdir(candidate, 'p') == 1 then
+    return candidate
+  end
+  vim.fn.mkdir(fallback, 'p')
+  return fallback
+end
+
+--- Normalize a path for temp-file comparison: forward slashes everywhere,
+--- case-insensitive on Windows where the filesystem is.
+---@param path string
+---@return string
+function M.normalize_tmp_path(path)
+  local p = path:gsub('\\', '/')
+  if vim.fn.has('win32') == 1 or vim.fn.has('win64') == 1 then
+    p = p:lower()
+  end
+  return p
+end
+
+--- Whether a native diagnostic path refers to an adapter's user source file.
+--- Compares full normalized paths, falling back to leaf names for temp paths
+--- rendered with symlinked/case variants. The user leaf must embed a run
+--- nonce so it can never equal the fixed helper leaf.
+---@param diag_path string? path from the diagnostic
+---@param user_file string temp user source path
+---@param helper_leaf string fixed helper filename to exclude, e.g. 'itchy_helper.go'
+---@return boolean
+function M.is_user_file(diag_path, user_file, helper_leaf)
+  if type(diag_path) ~= 'string' or diag_path == '' then
+    return false
+  end
+  if M.normalize_tmp_path(diag_path) == M.normalize_tmp_path(user_file) then
+    return true
+  end
+  local function base(p)
+    return p:gsub('\\', '/'):match('([^/]+)$') or p
+  end
+  if base(diag_path) == base(user_file) and base(diag_path) ~= helper_leaf then
+    return true
+  end
+  return false
+end
+
 --- Remove a temporary file exactly once (harmless if missing).
 ---@param path? string
 function M.remove_temp_file(path)
