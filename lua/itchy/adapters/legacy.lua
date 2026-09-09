@@ -90,16 +90,6 @@ function M.parse_error_output(ft, err)
 		if line_num and error_msg then
 			return (tonumber(line_num) or 0) + 1, error_msg
 		end
-	elseif ft == "bash" or ft == "sh" or ft == "zsh" then
-		local line_num, error_msg = err:match("^[^:]+:%s*line%s*(%d+):%s*(.+)")
-		if line_num and error_msg then
-			-- Native shell diagnostics are already 1-based source lines.
-			return tonumber(line_num) or 1, error_msg
-		end
-		local general_error = err:match("^[^:]+:%s*(.+)")
-		if general_error then
-			return nil, general_error
-		end
 	end
 
 	local runtime_err_msg = err:match("error:%s*(.+)")
