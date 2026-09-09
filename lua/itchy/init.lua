@@ -17,6 +17,8 @@ local renderer = require 'itchy.renderer'
 ---@field cancelled boolean whether the run was superseded/cleared
 ---@field namespace integer result namespace
 ---@field ft string filetype
+---@field prepared? itchy.PreparedExecution adapter execution request
+---@field adapter_cleaned? boolean whether prepared.cleanup ran
 
 ---@type table<integer, itchy.ActiveRun>
 local active_runs = {}
@@ -27,25 +29,6 @@ local lifecycle_attached = {}
 -- Test-only introspection (not public API).
 M._active_runs = active_runs
 M._executor = executor
-function M._reset_runs()
-  for _, run in pairs(active_runs) do
-    if run.handle then
-      pcall(function()
-        run.handle:cancel()
-      end)
-    end
-    if not run.cleaned and run.temp_file then
-      utils.remove_temp_file(run.temp_file)
-      run.cleaned = true
-    end
-  end
-  for k in pairs(active_runs) do
-    active_runs[k] = nil
-  end
-  for k in pairs(lifecycle_attached) do
-    lifecycle_attached[k] = nil
-  end
-end
 
 ---@param run itchy.ActiveRun
 local function cleanup_run_resources(run)
@@ -55,6 +38,41 @@ local function cleanup_run_resources(run)
   run.cleaned = true
   if run.temp_file then
     utils.remove_temp_file(run.temp_file)
+  end
+end
+
+--- Exactly-once adapter cleanup, analogous to cleanup_run_resources().
+--- PreparedExecution.cleanup is part of the adapter contract (#11); future
+--- adapters (e.g. JS/Python helper preload/temp resources) may allocate
+--- there, so every terminal run path must release it even when the run is
+--- stale, cancelled, invalid, or fails before rendering.
+---@param run itchy.ActiveRun
+local function cleanup_prepared(run)
+  if run.adapter_cleaned then
+    return
+  end
+  run.adapter_cleaned = true
+  local prepared = run.prepared
+  if prepared and prepared.cleanup then
+    pcall(prepared.cleanup)
+  end
+end
+
+function M._reset_runs()
+  for _, run in pairs(active_runs) do
+    if run.handle then
+      pcall(function()
+        run.handle:cancel()
+      end)
+    end
+    cleanup_run_resources(run)
+    cleanup_prepared(run)
+  end
+  for k in pairs(active_runs) do
+    active_runs[k] = nil
+  end
+  for k in pairs(lifecycle_attached) do
+    lifecycle_attached[k] = nil
   end
 end
 
@@ -79,6 +97,7 @@ local function invalidate_run(buf, clear_namespace)
       end)
     end
     cleanup_run_resources(run)
+    cleanup_prepared(run)
     active_runs[buf] = nil
   end
   if clear_namespace then
@@ -301,7 +320,12 @@ function M.run(rt, buf)
     buf = buf,
     cwd = vim.fn.getcwd(),
   }
-  local prepared = adapter.prepare(adapter_ctx)
+  local prep_ok, prepared_or_err = pcall(adapter.prepare, adapter_ctx)
+  if not prep_ok then
+    vim.notify('itchy: failed to prepare execution: ' .. tostring(prepared_or_err), vim.log.levels.ERROR, { title = 'itchy' })
+    return
+  end
+  local prepared = prepared_or_err
 
   -- Latest run wins: cancel any previous execution for this buffer.
   invalidate_run(buf, false)
@@ -333,6 +357,9 @@ function M.run(rt, buf)
   if use_temp_file then
     local path, terr = utils.create_temp_code_file(ft, prepared.source)
     if not path then
+      if prepared.cleanup then
+        pcall(prepared.cleanup)
+      end
       vim.notify('itchy: failed to create temp file: ' .. tostring(terr), vim.log.levels.ERROR, { title = 'itchy' })
       return
     end
@@ -353,6 +380,8 @@ function M.run(rt, buf)
     cancelled = false,
     namespace = namespace,
     ft = ft,
+    prepared = prepared,
+    adapter_cleaned = false,
   }
   active_runs[buf] = run
   ensure_lifecycle(buf)
@@ -362,15 +391,18 @@ function M.run(rt, buf)
     -- its callback after cancellation.
     if not is_current_run(run) then
       cleanup_run_resources(run)
+      cleanup_prepared(run)
       return
     end
     if not vim.api.nvim_buf_is_valid(run.buf) then
       cleanup_run_resources(run)
+      cleanup_prepared(run)
       active_runs[run.buf] = nil
       return
     end
     if err then
       cleanup_run_resources(run)
+      cleanup_prepared(run)
       active_runs[run.buf] = nil
       if err == 'cancelled' then
         return
@@ -381,12 +413,20 @@ function M.run(rt, buf)
     assert(result ~= nil)
     -- Non-zero exits still render stdout/stderr; the adapter normalizes
     -- runtime diagnostics into events and the generic renderer paints them.
-    local events = adapter.decode(adapter_ctx, prepared, result)
+    -- A throwing decoder must not break run cleanup: treat it as an
+    -- ordinary pipeline failure.
+    local decode_ok, events_or_err = pcall(adapter.decode, adapter_ctx, prepared, result)
+    if not decode_ok then
+      cleanup_run_resources(run)
+      cleanup_prepared(run)
+      active_runs[run.buf] = nil
+      vim.notify('itchy: failed to decode execution result: ' .. tostring(events_or_err), vim.log.levels.ERROR, { title = 'itchy' })
+      return
+    end
+    local events = events_or_err
 
     cleanup_run_resources(run)
-    if prepared.cleanup then
-      pcall(prepared.cleanup)
-    end
+    cleanup_prepared(run)
     -- Keep ownership through the scheduled render: renderer runs
     -- inside vim.schedule, so a clear/edit arriving between completion and
     -- rendering must still find this run to invalidate it. Releasing here
@@ -429,6 +469,7 @@ function M.run(rt, buf)
 
   if not ok then
     cleanup_run_resources(run)
+    cleanup_prepared(run)
     active_runs[buf] = nil
     vim.notify('itchy: failed to start execution: ' .. tostring(handle_or_err), vim.log.levels.ERROR, { title = 'itchy' })
     return
@@ -436,6 +477,7 @@ function M.run(rt, buf)
   run.handle = handle_or_err
   if run.handle == nil then
     cleanup_run_resources(run)
+    cleanup_prepared(run)
     active_runs[buf] = nil
     vim.notify('itchy: failed to spawn process', vim.log.levels.ERROR, { title = 'itchy' })
     return
