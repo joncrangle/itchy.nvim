@@ -10,9 +10,6 @@ function M.create_wrapper(ft, code, offset)
     javascript = require('itchy.wrappers.javascript').wrap,
     typescript = require('itchy.wrappers.javascript').wrap,
     python = require('itchy.wrappers.python').wrap,
-    bash = require('itchy.wrappers.shell').wrap,
-    sh = require('itchy.wrappers.shell').wrap,
-    zsh = require('itchy.wrappers.shell').wrap,
     dosbatch = require('itchy.wrappers.windows').wrap.cmd,
   }
 

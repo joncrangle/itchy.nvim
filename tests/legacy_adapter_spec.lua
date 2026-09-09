@@ -104,17 +104,11 @@ describe('itchy.adapters.legacy', function()
     eq(events[1].line, 8)
   end)
 
-  it('decodes representative shell diagnostics', function()
-    local ctx = { filetype = 'bash' }
-    local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = 'bash: line 3: division by 0\n' })
-    eq(#events, 1)
-    eq(events[1].kind, 'error')
-    eq(events[1].line, 3)
-  end)
-
   it('decodes locationless diagnostics with nil line', function()
-    local ctx = { filetype = 'bash' }
-    local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = 'bash: something went wrong\n' })
+    -- Shell diagnostics moved to the native shell adapters (issue #16);
+    -- unknown runtimes (e.g. dosbatch) surface via the generic fallback.
+    local ctx = { filetype = 'dosbatch' }
+    local events = legacy.decode(ctx, {}, { code = 1, signal = 0, stdout = '', stderr = 'some error: bad thing\n' })
     eq(#events, 1)
     eq(events[1].line, nil)
   end)

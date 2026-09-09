@@ -99,15 +99,16 @@ M.available_runtimes = {
     python = get_python_runtime(),
     uv = M.create_runtime('python', 'uv', { 'run', 'python', '-c' }, 26, false, nil, 'python'),
   },
-  -- shell command runtimes
+  -- shell command runtimes (native caller-location adapters for bash/zsh,
+  -- isolated POSIX-safe compatibility instrumentation for sh; issue #16)
   bash = {
-    bash = M.create_runtime('bash', 'bash', { '-c' }),
+    bash = M.create_runtime('bash', 'bash', {}, 0, false, nil, 'bash'),
   },
   zsh = {
-    zsh = M.create_runtime('zsh', 'zsh', { '-c' }),
+    zsh = M.create_runtime('zsh', 'zsh', {}, 0, false, nil, 'zsh'),
   },
   sh = {
-    sh = M.create_runtime('sh', 'sh', { '-c' }),
+    sh = M.create_runtime('sh', 'sh', {}, 0, false, nil, 'sh'),
   },
   -- windows shell runtimes
   dosbatch = {
