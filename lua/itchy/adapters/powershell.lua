@@ -68,6 +68,26 @@ function __itchy_IsUserFile($name) {
 	return (("$name" -replace '\\','/') -eq $__itchyUserNorm)
 }
 
+# Resolve a captured call stack to the user call site. $cs must be captured
+# INLINE in the proxy (`$__itchy_cs = Get-PSCallStack`): [0] is the proxy,
+# [1] the user location. A nested helper doing the capture itself would see
+# the proxy frame instead, so only the capture stays inline; everything
+# below takes the stack as an argument and never inspects its own. Returns
+# @(line, column) with $nulls for non-user frames.
+function __itchy_Locate($cs) {
+	$__itchy_line = $null
+	$__itchy_col = $null
+	try {
+		if ($cs.Count -ge 2 -and $cs[1].ScriptLineNumber -gt 0) {
+			if (__itchy_IsUserFile $cs[1].ScriptName) {
+				$__itchy_line = $cs[1].ScriptLineNumber
+				try { $__itchy_col = $cs[1].Position.StartColumnNumber } catch {}
+				if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
+			}
+		}
+	} catch {}
+	return @($__itchy_line, $__itchy_col)
+}
 # Forward the caller's preference/variable common parameters to a delegated
 # native call so `-ErrorAction Stop`, `-WarningAction`, `-OutVariable` and
 # friends keep working through the proxy. $bound is the proxy's
@@ -92,21 +112,12 @@ function Write-Output {
 		[switch]$NoEnumerate
 	)
 	begin {
-		# Capture the user call site HERE, before any helper call: [0] is
-		# this proxy, [1] the user location. A nested helper would see this
-		# proxy frame instead, so the capture stays inline in every proxy.
-		$__itchy_line = $null
-		$__itchy_col = $null
-		try {
-			$__itchy_cs = Get-PSCallStack
-			if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
-				if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
-					$__itchy_line = $__itchy_cs[1].ScriptLineNumber
-					try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
-					if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
-				}
-			}
-		} catch {}
+		# The stack must be captured HERE: [0] is this proxy, [1] the user
+		# location (see __itchy_Locate). A nested helper capturing itself
+		# would see this proxy frame instead.
+		$__itchy_lc = __itchy_Locate (Get-PSCallStack)
+		$__itchy_line = $__itchy_lc[0]
+		$__itchy_col = $__itchy_lc[1]
 		$__itchy_items = @()
 		$__itchy_piped = $false
 	}
@@ -139,18 +150,12 @@ function Write-Host {
 		[switch]$NoNewline
 	)
 	begin {
-		$__itchy_line = $null
-		$__itchy_col = $null
-		try {
-			$__itchy_cs = Get-PSCallStack
-			if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
-				if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
-					$__itchy_line = $__itchy_cs[1].ScriptLineNumber
-					try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
-					if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
-				}
-			}
-		} catch {}
+		# The stack must be captured HERE: [0] is this proxy, [1] the user
+		# location (see __itchy_Locate). A nested helper capturing itself
+		# would see this proxy frame instead.
+		$__itchy_lc = __itchy_Locate (Get-PSCallStack)
+		$__itchy_line = $__itchy_lc[0]
+		$__itchy_col = $__itchy_lc[1]
 		$__itchy_objs = @()
 	}
 	process {
@@ -175,18 +180,12 @@ function Write-Warning {
 		[Parameter(Position = 0, ValueFromPipeline = $true)][string]$Message
 	)
 	begin {
-		$__itchy_line = $null
-		$__itchy_col = $null
-		try {
-			$__itchy_cs = Get-PSCallStack
-			if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
-				if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
-					$__itchy_line = $__itchy_cs[1].ScriptLineNumber
-					try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
-					if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
-				}
-			}
-		} catch {}
+		# The stack must be captured HERE: [0] is this proxy, [1] the user
+		# location (see __itchy_Locate). A nested helper capturing itself
+		# would see this proxy frame instead.
+		$__itchy_lc = __itchy_Locate (Get-PSCallStack)
+		$__itchy_line = $__itchy_lc[0]
+		$__itchy_col = $__itchy_lc[1]
 		$__itchy_parts = @()
 	}
 	process {
@@ -218,18 +217,12 @@ function Write-Error {
 		[System.Exception]$Exception
 	)
 	begin {
-		$__itchy_line = $null
-		$__itchy_col = $null
-		try {
-			$__itchy_cs = Get-PSCallStack
-			if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
-				if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
-					$__itchy_line = $__itchy_cs[1].ScriptLineNumber
-					try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
-					if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
-				}
-			}
-		} catch {}
+		# The stack must be captured HERE: [0] is this proxy, [1] the user
+		# location (see __itchy_Locate). A nested helper capturing itself
+		# would see this proxy frame instead.
+		$__itchy_lc = __itchy_Locate (Get-PSCallStack)
+		$__itchy_line = $__itchy_lc[0]
+		$__itchy_col = $__itchy_lc[1]
 		$__itchy_parts = @()
 	}
 	process {

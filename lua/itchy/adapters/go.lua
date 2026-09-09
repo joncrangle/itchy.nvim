@@ -133,6 +133,60 @@ local function instrument_ts(source)
 	return table.concat(lines, "\n"), nil
 end
 
+--- Shared lexical primitives for the comment/string-aware scans below
+--- (`instrument_lexer` and `code_uses_package`). One definition of the span
+--- rules so a fix in one scan cannot diverge from the other.
+---@param b integer?
+---@return boolean
+local function is_ident_byte(b)
+	return b ~= nil
+		and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95)
+end
+
+---@param b integer?
+---@return boolean
+local function is_gap_byte(b)
+	return b == 32 or b == 9
+end
+
+--- First byte after the non-code span starting at byte i, or nil when i is
+--- ordinary code. Skips `//` line comments, `/* */` block comments,
+--- interpreted strings/runes (backslash escapes) and raw strings.
+---@param source string
+---@param n integer #source
+---@param i integer 1-based byte position
+---@return integer?
+local function span_end(source, n, i)
+	local b = source:byte(i)
+	if b == 47 then -- '/'
+		local c = source:byte(i + 1)
+		if c == 47 then
+			return source:find("\n", i, true) or (n + 1)
+		elseif c == 42 then -- '*'
+			local e = source:find("*/", i + 2, true)
+			return ((e and (e + 1)) or n) + 1
+		end
+		return nil
+	elseif b == 34 or b == 39 then -- string / rune literal
+		local j = i + 1
+		while j <= n do
+			local q = source:byte(j)
+			if q == 92 then -- backslash escapes the next byte
+				j = j + 2
+			elseif q == b then
+				return j + 1
+			else
+				j = j + 1
+			end
+		end
+		return n + 1 -- unterminated: consume rest
+	elseif b == 96 then -- raw string: no escapes
+		local e = source:find("`", i + 1, true)
+		return (e and (e + 1)) or (n + 1)
+	end
+	return nil
+end
+
 --- Pure-Lua fallback scanner: comment- and string-aware rewrite of the same
 --- `fmt|log.Print*` call selectors. Used only when the Go Tree-sitter parser
 --- is unavailable (Neovim ships no `go` parser on any version; it comes from
@@ -147,13 +201,8 @@ local function instrument_lexer(source)
 	local n = #source
 	local out = {}
 	local i = 1
-	local function is_ident(b)
-		return b ~= nil
-			and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95)
-	end
-	local function is_gap(b)
-		return b == 32 or b == 9
-	end
+	local is_ident = is_ident_byte
+	local is_gap = is_gap_byte
 	-- Try to match `fmt|log . Method (` at byte pos (normal state only).
 	-- Returns the REWRITES key and the selector end byte, or nil.
 	local function try_selector(pos)
@@ -197,46 +246,12 @@ local function instrument_lexer(source)
 		end
 		return nil
 	end
-	-- Copy a quoted span starting at start (quote byte q, backslash escapes).
-	-- Returns the first byte after the span.
-	local function copy_quoted(start, q)
-		local j = start + 1
-		while j <= n do
-			local c = source:byte(j)
-			if c == 92 then -- backslash escapes the next byte
-				j = j + 2
-			elseif c == q then
-				return j + 1
-			else
-				j = j + 1
-			end
-		end
-		return n + 1 -- unterminated: consume rest
-	end
 	while i <= n do
 		local b = source:byte(i)
-		if b == 47 and source:byte(i + 1) == 47 then -- '//' line comment
-			local j = source:find("\n", i, true) or (n + 1)
-			table.insert(out, source:sub(i, j - 1))
-			i = j
-		elseif b == 47 and source:byte(i + 1) == 42 then -- '/*' block comment
-			local e = source:find("*/", i + 2, true)
-			local j = e and (e + 1) or n
-			table.insert(out, source:sub(i, j))
-			i = j + 1
-		elseif b == 34 or b == 39 then -- string / rune literal
-			local j = copy_quoted(i, b)
-			table.insert(out, source:sub(i, j - 1))
-			i = j
-		elseif b == 96 then -- raw string: no escapes
-			local e = source:find("`", i + 1, true)
-			if e then
-				table.insert(out, source:sub(i, e))
-				i = e + 1
-			else -- unterminated: consume rest
-				table.insert(out, source:sub(i, n))
-				i = n + 1
-			end
+		local after = span_end(source, n, i)
+		if after ~= nil then
+			table.insert(out, source:sub(i, after - 1))
+			i = after
 		elseif (b == 102 or b == 108) and (i == 1 or not is_ident(source:byte(i - 1))) then -- 'f'/'l'
 			local key, sel_end = try_selector(i)
 			if key then
@@ -269,41 +284,13 @@ M._instrument_ts = instrument_ts
 local function code_uses_package(source, pkg)
 	local n = #source
 	local plen = #pkg
-	local function is_ident(b)
-		return b ~= nil
-			and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95)
-	end
-	local function is_gap(b)
-		return b == 32 or b == 9
-	end
-	-- First byte after a quoted span starting at start (backslash escapes).
-	local function skip_quoted(start, q)
-		local j = start + 1
-		while j <= n do
-			local c = source:byte(j)
-			if c == 92 then
-				j = j + 2
-			elseif c == q then
-				return j + 1
-			else
-				j = j + 1
-			end
-		end
-		return n + 1
-	end
+	local is_ident = is_ident_byte
+	local is_gap = is_gap_byte
 	local i = 1
 	while i <= n do
-		local b = source:byte(i)
-		if b == 47 and source:byte(i + 1) == 47 then -- '//' line comment
-			i = source:find("\n", i, true) or (n + 1)
-		elseif b == 47 and source:byte(i + 1) == 42 then -- '/*' block comment
-			local e = source:find("*/", i + 2, true)
-			i = (e and (e + 1) or n) + 1
-		elseif b == 34 or b == 39 then -- string / rune literal
-			i = skip_quoted(i, b)
-		elseif b == 96 then -- raw string: no escapes
-			local e = source:find("`", i + 1, true)
-			i = e and (e + 1) or (n + 1)
+		local after = span_end(source, n, i)
+		if after ~= nil then
+			i = after
 		elseif source:sub(i, i + plen - 1) == pkg then
 			local prev = i > 1 and source:byte(i - 1) or nil
 			if prev ~= nil and (is_ident(prev) or prev == 46) then

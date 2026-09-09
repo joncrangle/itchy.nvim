@@ -366,12 +366,11 @@ function M.run(rt, buf)
     temp_file = path
     table.insert(cmd, path)
   elseif not prepared.cmd then
-    -- Legacy adapters hand back a wrapped source string to evaluate
-    -- (`pwsh -Command "<wrapped>"`); structured adapters (go, powershell,
-    -- python, javascript) return a complete argv in prepared.cmd whose
-    -- sources already live in temp files. Appending the raw source there
-    -- would add a stray multiline argv element (fragile quoting on
-    -- Windows, confusing `$args`/`os.Args` on every OS).
+    -- Legacy adapters hand back a source string to evaluate and rely on the
+    -- core appending it to argv. Adapters that return a complete argv in
+    -- prepared.cmd already materialized their sources, so there is nothing
+    -- to append: an extra element would be a stray multiline argument with
+    -- fragile quoting on some platforms.
     table.insert(cmd, prepared.source)
   end
 
