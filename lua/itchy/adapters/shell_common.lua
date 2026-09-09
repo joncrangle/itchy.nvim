@@ -220,12 +220,13 @@ end
 --- Decode an executor result using side-channel records plus native
 --- stderr diagnostics.
 ---
---- Helpers delegate to the real builtins, so real output still reaches
---- stdout/stderr (redirections and pipelines behave natively). Delegated
---- duplicates are folded away: a raw line equal to a framed message part
---- is consumed rather than reported twice. Remaining raw stdout becomes
---- locationless output (external commands); remaining non-diagnostic
---- stderr becomes locationless errors. Nothing is ever guessed a location.
+--- Helpers delegate to the real builtins so redirections and pipelines behave
+--- natively. All intercepted output (`echo`/`printf`) is recorded via structured
+--- events in the adapter-private event file. Raw process stdout is intentionally
+--- not converted into itchy events to prevent duplicate or spurious locationless
+--- events on partial-line output (e.g. `printf '%s' foo; printf '%s\n' bar` or
+--- `echo -n foo; echo bar`). Delegated stderr copies are folded away, while native
+--- diagnostics and non-diagnostic stderr become error events.
 ---@param ctx itchy.AdapterContext
 ---@param prepared itchy.PreparedExecution
 ---@param result itchy.ExecutionResult
@@ -270,21 +271,6 @@ function M.decode_sidechannel(ctx, prepared, result)
 		end
 		table.insert(events, event.create(record.kind, record.message, record.line, record.column))
 	end
-
-	framed.each_line(result.stdout, function(line)
-		if line == "" or legacy.should_filter_line(line) then
-			return
-		end
-		-- A framed record leaking onto raw stdout (foreign prefix) is
-		-- ordinary output, never a location.
-		if framed.decode_line(line, nonce) then
-			return
-		end
-		if consume(line) then
-			return
-		end
-		table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
-	end)
 
 	framed.each_line(result.stderr, function(line)
 		if line == "" or legacy.should_filter_line(line) then

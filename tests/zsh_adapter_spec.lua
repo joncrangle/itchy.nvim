@@ -286,4 +286,42 @@ describe('itchy.adapters.zsh', function()
       eq(marks[1][2], 2)
     end)
   end)
+
+  it('does not duplicate non-newline printf calls into locationless events', function()
+    if vim.fn.executable('zsh') ~= 1 then
+      return
+    end
+    local ctx = ctx_for("printf '%s' foo\nprintf '%s\\n' bar\n")
+    local prepared = zsh.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local events, out = run_decode(ctx, prepared)
+      eq(out.stdout, 'foobar\n')
+      eq(#events, 2)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, 1)
+      eq(events[1].message, 'foo')
+      eq(events[2].kind, 'stdout')
+      eq(events[2].line, 2)
+      eq(events[2].message, 'bar')
+    end)
+  end)
+
+  it('does not duplicate echo -n calls into locationless events', function()
+    if vim.fn.executable('zsh') ~= 1 then
+      return
+    end
+    local ctx = ctx_for('echo -n foo\necho bar\n')
+    local prepared = zsh.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local events, out = run_decode(ctx, prepared)
+      eq(out.stdout, 'foobar\n')
+      eq(#events, 2)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, 1)
+      eq(events[1].message, 'foo')
+      eq(events[2].kind, 'stdout')
+      eq(events[2].line, 2)
+      eq(events[2].message, 'bar')
+    end)
+  end)
 end)
