@@ -91,15 +91,78 @@ function __itchy_firstUserFrame(stack) {
 	}
 	return null;
 }
-function __itchy_caller() {
+function __itchy_userBase() {
+	const u = __itchy_norm(__itchy_USER_URL).replace(/^file:\/\/\//, "").replace(/^file:\/\//, "").replace(/^\/([A-Za-z]:\/)/, "$1");
+	const parts = u.split("/");
+	return parts[parts.length - 1];
+}
+function __itchy_matchUser(framePath) {
+	if (__itchy_isUser(framePath)) return true;
+	// Basename fallback: some runtimes render frames as relative paths or
+	// otherwise decorated locations; the temp user basename is unique per
+	// run and never equals the helper basename.
+	const base = __itchy_norm(framePath).split("/").pop();
+	const userBase = __itchy_userBase();
+	const helperBase = __itchy_norm(__itchy_HELPER_URL).split("/").pop();
+	if (base && userBase && base === userBase && base !== helperBase) return true;
+	return false;
+}
+function __itchy_callerStructured() {
+	try {
+		if (typeof Error.captureStackTrace !== "function") return null;
+		const prevPrepare = Error.prepareStackTrace;
+		let frames = null;
+		try {
+			Error.prepareStackTrace = function (_, structured) {
+				return structured;
+			};
+			const probe = {};
+			Error.captureStackTrace(probe, __itchy_callerStructured);
+			frames = probe.stack;
+		} finally {
+			Error.prepareStackTrace = prevPrepare;
+		}
+		if (!Array.isArray(frames)) return null;
+		for (const f of frames) {
+			let fname = null;
+			try {
+				fname = f.getFileName();
+			} catch (e) {
+				continue;
+			}
+			if (!fname) continue;
+			if (__itchy_isHelper(fname)) continue;
+			if (__itchy_matchUser(fname)) {
+				let fline = null;
+				let fcol = null;
+				try {
+					fline = f.getLineNumber();
+				} catch (e) {}
+				try {
+					fcol = f.getColumnNumber();
+				} catch (e) {}
+				if (typeof fline === "number" && fline >= 1) {
+					return { line: fline, col: typeof fcol === "number" && fcol >= 1 ? fcol : null };
+				}
+			}
+		}
+	} catch (e) {
+		return null;
+	}
+	return null;
+}
+function __itchy_callerFallback() {
 	const lines = (new Error().stack || "").split("\n");
 	for (let i = 1; i < lines.length; i++) {
 		const f = __itchy_framePath(lines[i]);
 		if (!f) continue;
 		if (__itchy_isHelper(f.path)) continue;
-		if (__itchy_isUser(f.path)) return { line: f.line, col: f.col };
+		if (__itchy_matchUser(f.path)) return { line: f.line, col: f.col };
 	}
 	return null;
+}
+function __itchy_caller() {
+	return __itchy_callerStructured() || __itchy_callerFallback();
 }
 function __itchy_emit(kind, args) {
 	const c = __itchy_caller();
