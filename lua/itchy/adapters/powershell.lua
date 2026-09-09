@@ -5,9 +5,9 @@
 --- ScriptLineNumber values keep matching buffer lines); a separate launcher
 --- defines proxy functions for `Write-Output`, `Write-Host`,
 --- `Write-Warning` and `Write-Error`. Each proxy captures its call site
---- with native call-stack metadata (`Get-PSCallStack`, falling back to
---- `$MyInvocation`) BEFORE emitting, so helper frames never replace the
---- user location, then reports a nonce-framed structured event through
+--- inline with native call-stack metadata (`Get-PSCallStack` line/column via
+--- `Position`, file via `ScriptName`) BEFORE emitting, so helper frames never
+--- replace the user location, then reports a nonce-framed structured event through
 --- `[Console]::Out` (bypassing PowerShell streams, so files and pipes are
 --- never polluted with metadata). No per-line `currentLine` tracking, no
 --- source rewriting: comments and strings naming output commands never
@@ -45,15 +45,18 @@ $__itchyUserFile = '__ITCHY_USER_FILE__'
 $__itchyUserNorm = ($__itchyUserFile -replace '\\','/')
 if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }
 
-function __itchy_Emit($kind, $message, $line) {
+function __itchy_Emit($kind, $message, $line, $column) {
 	$evt = @{ kind = "$kind"; message = "$message" }
 	if ($line) { $evt['line'] = [int]$line }
+	if ($column) { $evt['column'] = [int]$column }
 	$json = $evt | ConvertTo-Json -Compress
 	[Console]::Out.WriteLine([char]0x1E + 'ITCHY:' + $__itchyNonce + ':' + $json)
 }
 
 # Whether a ScriptName belongs to the user file. Takes only strings, never
-# inspects the stack, so proxies may safely call it after capturing.
+# inspects the stack, so proxies may safely call it after capturing. An empty
+# name (dynamic code with no file) is attributed to the user run rather than
+# dropped: the only code executing here is the user file and this launcher.
 function __itchy_IsUserFile($name) {
 	if (-not $name) { return $true }
 	return (("$name" -replace '\\','/') -eq $__itchyUserNorm)
@@ -64,11 +67,14 @@ function Write-Output {
 	# proxy, [1] the user location. A nested helper would see this proxy
 	# frame instead, so the capture must stay inline in every proxy.
 	$__itchy_line = $null
+	$__itchy_col = $null
 	try {
 		$__itchy_cs = Get-PSCallStack
 		if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
 			if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
 				$__itchy_line = $__itchy_cs[1].ScriptLineNumber
+				try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
+				if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
 			}
 		}
 	} catch {}
@@ -76,7 +82,7 @@ function Write-Output {
 	foreach ($a in $args) { $items += $a }
 	foreach ($i in $input) { $items += $i }
 	$text = ($items | ForEach-Object { "$_" }) -join ' '
-	__itchy_Emit 'stdout' $text $__itchy_line
+	__itchy_Emit 'stdout' $text $__itchy_line $__itchy_col
 }
 
 function Write-Host {
@@ -88,28 +94,34 @@ function Write-Host {
 		[switch]$NoNewline
 	)
 	$__itchy_line = $null
+	$__itchy_col = $null
 	try {
 		$__itchy_cs = Get-PSCallStack
 		if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
 			if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
 				$__itchy_line = $__itchy_cs[1].ScriptLineNumber
+				try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
+				if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
 			}
 		}
 	} catch {}
 	$sep = ' '
 	if ($Separator -is [string]) { $sep = $Separator }
 	$text = ($Object | ForEach-Object { "$_" }) -join $sep
-	__itchy_Emit 'stdout' $text $__itchy_line
+	__itchy_Emit 'stdout' $text $__itchy_line $__itchy_col
 }
 
 function Write-Warning {
 	param([Parameter(Position = 0)]$Message, [Parameter(ValueFromRemainingArguments = $true)][object[]]$Rest)
 	$__itchy_line = $null
+	$__itchy_col = $null
 	try {
 		$__itchy_cs = Get-PSCallStack
 		if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
 			if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
 				$__itchy_line = $__itchy_cs[1].ScriptLineNumber
+				try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
+				if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
 			}
 		}
 	} catch {}
@@ -117,17 +129,20 @@ function Write-Warning {
 	if ($null -ne $Message) { $parts += $Message }
 	foreach ($r in $Rest) { $parts += $r }
 	$text = ($parts | ForEach-Object { "$_" }) -join ' '
-	__itchy_Emit 'warning' $text $__itchy_line
+	__itchy_Emit 'warning' $text $__itchy_line $__itchy_col
 }
 
 function Write-Error {
 	param([Parameter(Position = 0)]$Message, [Parameter(ValueFromRemainingArguments = $true)][object[]]$Rest)
 	$__itchy_line = $null
+	$__itchy_col = $null
 	try {
 		$__itchy_cs = Get-PSCallStack
 		if ($__itchy_cs.Count -ge 2 -and $__itchy_cs[1].ScriptLineNumber -gt 0) {
 			if (__itchy_IsUserFile $__itchy_cs[1].ScriptName) {
 				$__itchy_line = $__itchy_cs[1].ScriptLineNumber
+				try { $__itchy_col = $__itchy_cs[1].Position.StartColumnNumber } catch {}
+				if ($__itchy_col -and $__itchy_col -lt 1) { $__itchy_col = $null }
 			}
 		}
 	} catch {}
@@ -135,7 +150,7 @@ function Write-Error {
 	if ($null -ne $Message) { $parts += $Message }
 	foreach ($r in $Rest) { $parts += $r }
 	$text = ($parts | ForEach-Object { "$_" }) -join ' '
-	__itchy_Emit 'error' $text $__itchy_line
+	__itchy_Emit 'error' $text $__itchy_line $__itchy_col
 }
 
 & "$__itchyUserFile"
@@ -168,39 +183,6 @@ trap {
 }
 ]=]
 
---- Normalize a path for user-file comparison.
----@param path string
----@return string
-local function norm_path(path)
-	local p = path:gsub("\\", "/")
-	if vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 then
-		p = p:lower()
-	end
-	return p
-end
-
---- Whether a diagnostic path refers to the user's source file.
----@param diag_path string?
----@param user_file string
----@return boolean
-local function is_user_file(diag_path, user_file)
-	if type(diag_path) ~= "string" or diag_path == "" then
-		return false
-	end
-	if norm_path(diag_path) == norm_path(user_file) then
-		return true
-	end
-	local function base(p)
-		return p:gsub("\\", "/"):match("([^/]+)$") or p
-	end
-	-- The launcher leaf is fixed (`itchy_launcher.ps1`) and never equals the
-	-- run-unique user leaf, so a basename match safely identifies the user.
-	if base(diag_path) == base(user_file) and base(diag_path) ~= "itchy_launcher.ps1" then
-		return true
-	end
-	return false
-end
-
 --- Parse native PowerShell stderr: the `path.ps1:LINE` frame belonging to
 --- the user file plus the `|` detail lines carrying the message.
 ---@param stderr_text string
@@ -218,7 +200,7 @@ local function parse_ps_error(stderr_text, user_file)
 		if path == nil then
 			path, lnum = line:match("(%S-%.ps1):(%d+)")
 		end
-		if path ~= nil and is_user_file(path, user_file) then
+		if path ~= nil and utils.is_user_file(path, user_file, "itchy_launcher.ps1") then
 			found_line = tonumber(lnum)
 		end
 	end)
@@ -267,26 +249,9 @@ function M.prepare(ctx)
 	local source = ctx.source or ""
 	local nonce = framed.create_nonce()
 
-	local dir = utils.project_dir(ctx)
-	-- Absolute paths: ScriptName arrives absolute, so a relative tmpdir
-	-- would never compare equal on the PowerShell side.
-	if type(dir) == "string" and dir ~= "" then
-		dir = vim.fn.fnamemodify(dir, ":p"):gsub("[/\\]$", "")
-	end
-	local tmpdir = vim.fn.tempname() .. "_itchy_ps"
-	if type(dir) == "string" and dir ~= "" then
-		local leaf = "itchy-ps-" .. tostring(vim.fn.getpid()) .. "-" .. nonce
-		local candidate = dir:gsub("[/\\]$", "") .. "/" .. leaf
-		if vim.fn.mkdir(candidate, "p") == 1 then
-			tmpdir = candidate
-		else
-			vim.fn.mkdir(tmpdir, "p")
-		end
-	else
-		vim.fn.mkdir(tmpdir, "p")
-	end
+	local tmpdir = utils.make_adapter_tmpdir(utils.project_dir(ctx), "itchy-ps", nonce)
 
-	local user_path = tmpdir .. "/script.ps1"
+	local user_path = tmpdir .. "/itchy-user-" .. nonce .. ".ps1"
 	local launcher_path = tmpdir .. "/itchy_launcher.ps1"
 	-- The trap is appended after the user code: existing lines never shift,
 	-- so native locations keep matching buffer lines byte for byte.

@@ -116,7 +116,7 @@ function M.wrap_cmd(code, offset)
   return result
 end
 
--- dosbatch/cmd stays on the compatibility adapter (issues #13, #15).
+--- dosbatch/cmd stays on the compatibility adapter (issues #13, #15).
 M.wrap = {
   cmd = M.wrap_cmd,
 }

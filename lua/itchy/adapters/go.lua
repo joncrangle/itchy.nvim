@@ -7,7 +7,9 @@
 --- their exact line breaks, so multiline calls work and native source lines
 --- never shift. Locations come from `runtime.Caller(1)` inside the helper,
 --- called directly by the instrumented call site (depth verified by the
---- exact-line e2e tests). Compiler diagnostics and panic stacks keep their
+--- exact-line e2e tests). Both `fmt.*` and `log.*` output report as
+--- `stdout` events (log content is program output, not an error diagnostic);
+--- compiler diagnostics and panic stacks keep their
 --- native `path:line:col` coordinates; no generated-source offsets.
 ---
 --- The user's (instrumented) source and the helper live in separate files in
@@ -39,7 +41,7 @@ local REWRITES = {
 
 --- Whether Tree-sitter can parse Go in this Neovim (no hard requirement).
 ---@return boolean
-function M.has_treesitter()
+function M._has_treesitter()
 	local ok_lang = pcall(vim.treesitter.language.add, "go")
 	if not ok_lang then
 		return false
@@ -49,7 +51,6 @@ function M.has_treesitter()
 end
 
 --- Instrument only relevant call selectors via Tree-sitter.
---- Returns the rewritten source and the number of rewritten calls.
 ---@param source string
 ---@return string?, string? instrumented source or nil + error
 local function instrument(source)
@@ -73,9 +74,8 @@ local function instrument(source)
 		return nil, "go treesitter query failed"
 	end
 
-	---@type table<integer, table[]> per-row replacements {col_start, col_end, text}
-	local by_row = {}
-	local count = 0
+	---@type table<integer, table[]> per-TS-row replacements {start_col, end_col, text}; TS rows/cols are 0-based bytes
+	local by_ts_row = {}
 	for id, node, _ in query:iter_captures(root, source, 0, -1) do
 		local capture = query.captures[id]
 		if capture == "obj" then
@@ -91,12 +91,11 @@ local function instrument(source)
 					local key = obj_text .. "." .. fld_text
 					local replacement = REWRITES[key]
 					if replacement ~= nil then
-						local sr, sc, er, ec = parent:range()
+						local start_row, start_col, end_row, end_col = parent:range()
 						-- Selectors never span lines; skip anything unexpected.
-						if sr == er then
-							by_row[sr] = by_row[sr] or {}
-							table.insert(by_row[sr], { sc = sc, ec = ec, text = replacement })
-							count = count + 1
+						if start_row == end_row then
+							by_ts_row[start_row] = by_ts_row[start_row] or {}
+							table.insert(by_ts_row[start_row], { start_col = start_col, end_col = end_col, text = replacement })
 						end
 					end
 				end
@@ -104,7 +103,7 @@ local function instrument(source)
 		end
 	end
 
-	if count == 0 then
+	if next(by_ts_row) == nil then
 		return source, nil
 	end
 
@@ -112,16 +111,16 @@ local function instrument(source)
 	local lines = vim.split(source, "\n", { plain = true })
 	-- vim.split drops nothing; a trailing \n yields a final "" element which
 	-- round-trips correctly on rejoin.
-	for row, reps in pairs(by_row) do
+	for ts_row, reps in pairs(by_ts_row) do
 		table.sort(reps, function(a, b)
-			return a.sc > b.sc
+			return a.start_col > b.start_col
 		end)
-		local idx = row + 1 -- 0-based TS row -> 1-based lua index
+		local idx = ts_row + 1 -- 0-based TS row -> 1-based lua index
 		local line = lines[idx]
 		if line ~= nil then
-			for _, r in ipairs(reps) do
+			for _, rep in ipairs(reps) do
 				-- TS columns are 0-based byte offsets; Lua string ops are 1-based bytes.
-				line = line:sub(1, r.sc) .. r.text .. line:sub(r.ec + 1)
+				line = line:sub(1, rep.start_col) .. rep.text .. line:sub(rep.end_col + 1)
 			end
 			lines[idx] = line
 		end
@@ -220,17 +219,17 @@ func __itchyFmtPrintln(a ...any) (int, error) {
 
 func __itchyLogPrint(a ...any) {
 	msg := fmt.Sprint(a...)
-	__itchyEmit("stderr", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
+	__itchyEmit("stdout", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
 }
 
 func __itchyLogPrintf(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
-	__itchyEmit("stderr", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
+	__itchyEmit("stdout", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
 }
 
 func __itchyLogPrintln(a ...any) {
 	msg := fmt.Sprintln(a...)
-	__itchyEmit("stderr", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
+	__itchyEmit("stdout", strings.TrimSuffix(msg, "\n"), __itchyLineOffset(1))
 }
 
 func __itchyLineOffset(skip int) *int {
@@ -248,39 +247,6 @@ func __itchyLineOffset(skip int) *int {
 end
 
 --- Normalize a path for user-file comparison (slashes + case on Windows).
----@param path string
----@return string
-local function norm_path(path)
-	local p = path:gsub("\\", "/")
-	if vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 then
-		p = p:lower()
-	end
-	return p
-end
-
---- Whether a diagnostic path refers to the user's source file.
----@param diag_path string?
----@param user_file string
----@return boolean
-local function is_user_file(diag_path, user_file)
-	if type(diag_path) ~= "string" or diag_path == "" then
-		return false
-	end
-	if norm_path(diag_path) == norm_path(user_file) then
-		return true
-	end
-	-- `go run` may render temp paths with symlinked/case variants; fall back
-	-- to leaf-name comparison (the temp user leaf is run-unique and never
-	-- equals the helper leaf `itchy_helper.go`).
-	local function base(p)
-		return p:gsub("\\", "/"):match("([^/]+)$") or p
-	end
-	if base(diag_path) == base(user_file) and base(diag_path) ~= "itchy_helper.go" then
-		return true
-	end
-	return false
-end
-
 --- Parse native Go compiler diagnostics: `path.go:LINE:COL: message`.
 --- Returns events for frames belonging to the user file.
 ---@param stderr_text string
@@ -291,7 +257,7 @@ local function parse_compiler_errors(stderr_text, user_file, header_offset)
 	local events = {}
 	framed.each_line(stderr_text, function(line)
 		local path, lnum, col, msg = line:match("^(.-%.go):(%d+):(%d+):?%s*(.*)$")
-		if path ~= nil and is_user_file(path, user_file) then
+		if path ~= nil and utils.is_user_file(path, user_file, "itchy_helper.go") then
 			local src_line = tonumber(lnum) - (header_offset or 0)
 			local src_col = tonumber(col)
 			msg = msg ~= "" and msg or line
@@ -332,7 +298,7 @@ local function parse_panic(stderr_text, user_file, header_offset)
 			return
 		end
 		local path, lnum = line:match("^%s*(.-%.go):(%d+)")
-		if path ~= nil and is_user_file(path, user_file) then
+		if path ~= nil and utils.is_user_file(path, user_file, "itchy_helper.go") then
 			frame_line = tonumber(lnum) - (header_offset or 0)
 		end
 	end)
@@ -348,7 +314,7 @@ end
 function M.prepare(ctx)
 	assert(ctx ~= nil, "go adapter requires a context")
 	assert(ctx.runtime ~= nil, "go adapter requires ctx.runtime")
-	if not M.has_treesitter() then
+	if not M._has_treesitter() then
 		return legacy.prepare(ctx)
 	end
 	local runtime = ctx.runtime
@@ -370,33 +336,15 @@ function M.prepare(ctx)
 	-- Keep explicit imports used: replacing every fmt/log call can leave the
 	-- import unused (a per-file compile error). Appending a package-level
 	-- blank reference after the user code preserves all existing line numbers.
-	if base:find('"fmt"', 1, true) ~= nil and instrumented:find("fmt%.", 1, true) == nil then
-		instrumented = instrumented .. '\nvar _ = fmt.Sprint // itchy: keep fmt import used\n'
-	end
-	if base:find('"log"', 1, true) ~= nil and instrumented:find("log%.", 1, true) == nil then
-		instrumented = instrumented .. '\nvar _ = log.Print // itchy: keep log import used\n'
-	end
-
-	local dir = utils.project_dir(ctx)
-	-- Absolute paths: `go run` diagnostics carry absolute temp paths.
-	if type(dir) == "string" and dir ~= "" then
-		dir = vim.fn.fnamemodify(dir, ":p"):gsub("[/\\]$", "")
-	end
-	local tmpdir = vim.fn.tempname() .. "_itchy_go"
-	if type(dir) == "string" and dir ~= "" then
-		-- Prefer the run cwd so local packages resolve; fall back to OS temp.
-		local leaf = "itchy-go-" .. tostring(vim.fn.getpid()) .. "-" .. nonce
-		local candidate = dir:gsub("[/\\]$", "") .. "/" .. leaf
-		if vim.fn.mkdir(candidate, "p") == 1 then
-			tmpdir = candidate
-		else
-			vim.fn.mkdir(tmpdir, "p")
+	for _, keep in ipairs({ { '"fmt"', "fmt%.", "fmt.Sprint" }, { '"log"', "log%.", "log.Print" } }) do
+		if base:find(keep[1], 1, true) ~= nil and instrumented:find(keep[2], 1, true) == nil then
+			instrumented = instrumented .. "\nvar _ = " .. keep[3] .. " // itchy: keep import used\n"
 		end
-	else
-		vim.fn.mkdir(tmpdir, "p")
 	end
 
-	local user_path = tmpdir .. "/main.go"
+	local tmpdir = utils.make_adapter_tmpdir(utils.project_dir(ctx), "itchy-go", nonce)
+
+	local user_path = tmpdir .. "/itchy-user-" .. nonce .. ".go"
 	local helper_path = tmpdir .. "/itchy_helper.go"
 	local uf, uerr = io.open(user_path, "w")
 	if not uf then
