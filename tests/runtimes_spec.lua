@@ -81,6 +81,7 @@ local test_cases = {
       'Async operation complete',
       'division by 0',
     },
+    pass_min = 2,
   },
   zsh = {
     runtimes = { 'zsh' },

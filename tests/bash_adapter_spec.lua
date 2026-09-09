@@ -1,4 +1,5 @@
 local bash = require 'itchy.adapters.bash'
+local shell_common = require 'itchy.adapters.shell_common'
 local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
@@ -184,7 +185,7 @@ describe('itchy.adapters.bash', function()
     if vim.fn.executable('bash') ~= 1 then
       return
     end
-    local redir = vim.fn.tempname() .. '_itchy_redir'
+    local redir = shell_common.temp_path '_itchy_redir'
     local ctx = ctx_for('echo "redir-target" > ' .. redir .. '\necho after\n')
     local prepared = bash.prepare(ctx)
     with_cleanup(prepared, function()

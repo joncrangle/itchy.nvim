@@ -24,6 +24,13 @@ function M.shell_dquote(path)
 	return (path:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("%$", "\\$"):gsub("`", "\\`"))
 end
 
+--- Create a normalized temp file path with forward slashes for cross-platform shell compatibility.
+---@param suffix? string
+---@return string
+function M.temp_path(suffix)
+	return (vim.fn.tempname() .. (suffix or "")):gsub("\\", "/")
+end
+
 --- Render a shell launcher template by replacing standard placeholders.
 ---@param template string
 ---@param nonce string
@@ -131,7 +138,7 @@ end
 ---@param suffix string user-file suffix, e.g. ".sh"
 ---@return string tmpdir, string user_path, string launcher_path, string event_path
 function M.allocate_tmp(ctx, prefix, nonce, suffix)
-	local tmpdir = utils.make_adapter_tmpdir(utils.project_dir(ctx), prefix, nonce)
+	local tmpdir = utils.make_adapter_tmpdir(utils.project_dir(ctx), prefix, nonce):gsub("\\", "/")
 	local user_path = tmpdir .. "/itchy-user-" .. nonce .. suffix
 	local launcher_path = tmpdir .. "/itchy-launcher-" .. nonce .. ".sh"
 	local event_path = tmpdir .. "/itchy-events-" .. nonce .. ".jsonl"

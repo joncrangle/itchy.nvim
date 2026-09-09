@@ -1,4 +1,5 @@
 local zsh = require 'itchy.adapters.zsh'
+local shell_common = require 'itchy.adapters.shell_common'
 local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
@@ -158,7 +159,7 @@ describe('itchy.adapters.zsh', function()
     if vim.fn.executable('zsh') ~= 1 then
       return
     end
-    local redir = vim.fn.tempname() .. '_itchy_redir'
+    local redir = shell_common.temp_path '_itchy_redir'
     local ctx = ctx_for('echo "redir-target" > ' .. redir .. '\necho after\n')
     local prepared = zsh.prepare(ctx)
     with_cleanup(prepared, function()

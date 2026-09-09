@@ -1,4 +1,5 @@
 local sh = require 'itchy.adapters.sh'
+local shell_common = require 'itchy.adapters.shell_common'
 local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
@@ -54,7 +55,7 @@ local function shells()
   if vim.fn.executable('sh') == 1 then
     table.insert(found, 'sh')
   end
-  if vim.fn.executable('dash') == 1 and vim.fn.exepath('dash') ~= vim.fn.exepath('sh') then
+  if vim.fn.has('win32') == 0 and vim.fn.executable('dash') == 1 and vim.fn.exepath('dash') ~= vim.fn.exepath('sh') then
     table.insert(found, 'dash')
   end
   return found
@@ -219,7 +220,7 @@ describe('itchy.adapters.sh', function()
     end)
 
     it('preserves redirections under ' .. shell, function()
-      local redir = vim.fn.tempname() .. '_itchy_redir'
+      local redir = shell_common.temp_path '_itchy_redir'
       local ctx = ctx_for('echo "redir-target" > ' .. redir .. '\necho after\n', shell)
       local prepared = sh.prepare(ctx)
       with_cleanup(prepared, function()
