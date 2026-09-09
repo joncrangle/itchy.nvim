@@ -206,8 +206,8 @@ for ft, test_case in pairs(test_cases) do
           return
         end
 
-        -- sh runs through the isolated POSIX-safe compatibility adapter
-        -- (issue #16), which works under dash as well as bash-as-sh.
+        -- sh runs through the POSIX-safe compatibility adapter,
+        -- which works under dash as well as bash-as-sh.
         -- Get the namespace name upfront
         local namespace_name = 'itchy_' .. ft .. '_result'
 

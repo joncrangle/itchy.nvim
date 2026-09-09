@@ -1,33 +1,6 @@
---- POSIX `sh` compatibility adapter (issue #16).
----
---- POSIX `sh` provides no Bash/Zsh-style caller stack, so source
---- transformation is the intentional compatibility strategy here -- and
---- ONLY here. The prepared file is a fixed helper header followed by the
---- user's source with only output-producing commands (`echo`/`printf`,
---- with optional `command`/`builtin` prefixes) rewritten into calls of
---- adapter helpers with an explicit absolute line number:
----
----   echo hello > file      ->  __itchy_echo 8 hello > file
----
---- (absolute: the header size is added at prepare time, so records need
---- no further mapping). Redirections and pipelines stay verbatim on the
---- rewritten line, so they keep applying to the helper call; the helper
---- reports a nonce-framed record to an adapter-private event file and
---- delegates to the real builtin, so files and pipes are never polluted
---- with metadata. Everything else (including comments, heredoc bodies and
---- lines the conservative matcher does not understand) runs verbatim:
---- correct execution matters more than eliminating all transformation.
----
---- The single-file layout keeps native diagnostics locatable: dash reports
---- `file: N:` for directly executed files but drops user coordinates for
---- sourced ones, so the adapter executes its prepared file directly and
---- subtracts the known header size from native diagnostics. Anything
---- without a reliable location becomes a locationless event, never a guess.
----
---- The prepared code is strictly POSIX: `name() { ...; }` functions only,
---- no `local`, no arrays, no `BASH_*`, no `trap ERR`, no `pipefail`, no
---- process substitution, no `$''`, no `[[ ]]`. Octal `\036` (not `\x1e`)
---- frames records for `printf` implementations without hex escapes.
+--- POSIX sh adapter. Prepends a POSIX helper header and rewrites echo and printf
+--- calls with explicit line arguments. Diagnostics from native stderr are
+--- mapped back to user lines by subtracting the header length.
 local M = {}
 
 local framed = require("itchy.adapters.framed")

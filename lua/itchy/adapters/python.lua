@@ -1,15 +1,10 @@
---- Python adapter with minimal source transformation (issue #12).
----
---- The user's source is executed unchanged from a temp file (no whole-program
---- `try:` indent). `print()` locations come from caller-frame introspection
---- in a separate launcher file; uncaught exceptions keep their native
---- tracebacks, parsed for the deepest frame belonging to the user's file.
---- No manufactured `LINE<n>` errors, no generated-source offset arithmetic.
+--- Python adapter. Executes user source unchanged from a temp file with
+--- caller-frame introspection for print() locations and native traceback
+--- parsing for uncaught exceptions.
 local M = {}
 
 local event = require("itchy.event")
 local framed = require("itchy.adapters.framed")
-local legacy = require("itchy.adapters.legacy")
 local utils = require("itchy.utils")
 
 M.name = "python"
@@ -21,8 +16,7 @@ local function py_escape(path)
 	return (path:gsub("\\", "\\\\"):gsub("'", "\\'"))
 end
 
--- Launcher: installs the print wrapper, then execs the (unchanged) user file
--- with its own filename so tracebacks carry true source coordinates.
+-- Launcher: installs print interceptor, then executes user file.
 local PY_HELPER = [[
 import builtins as __itchy_builtins
 import sys as __itchy_sys
@@ -31,10 +25,7 @@ import os as __itchy_os
 __ITCHY_NONCE = "__ITCHY_NONCE__"
 __ITCHY_USER_FILE = "__ITCHY_USER_FILE__"
 
-# Sibling imports (import helper) resolve against the executed source file,
-# mirroring `python path/to/main.py`. Previously `python -c` put the real
-# cwd first on sys.path; the executed file's directory is the robust
-# equivalent now that the source lives in a real file.
+# Resolve sibling imports against the executed file directory.
 __itchy_dir = __itchy_os.path.dirname(__ITCHY_USER_FILE)
 if __itchy_dir and __itchy_dir not in __itchy_sys.path:
     __itchy_sys.path.insert(0, __itchy_dir)
@@ -91,11 +82,7 @@ def __itchy_print(*args, sep=" ", end="\n", file=None, flush=False):
                 )
         return
     line, column = __itchy_caller_line()
-    # A print emitted while the interpreter is handling an exception
-    # (e.g. inside an `except` block) is an error diagnostic, mirroring
-    # how console.error/console.warn classify diagnostics in the JS
-    # adapter. Classification uses native interpreter state; locations
-    # still come from the caller frame.
+    # Prints inside an active exception handler count as error diagnostics.
     kind = "stdout" if __itchy_sys.exc_info()[0] is None else "error"
     __itchy_emit(kind, text, line, column)
     if flush:
@@ -251,19 +238,12 @@ function M.decode(ctx, prepared, result)
 	local seen_stderr = {}
 
 	framed.each_line(result.stdout, function(line)
-		-- Structured events are nonce-authenticated: decode them before
-		-- any legacy wrapper-noise filtering, so legitimate user output
-		-- that merely resembles noise (e.g. 'window is not defined')
-		-- can never be discarded.
 		local record = framed.decode_line(line, nonce)
 		if record then
 			if record.kind == "stderr" then
 				seen_stderr[record.message] = true
 			end
 			table.insert(events, event.create(record.kind, record.message, record.line, record.column))
-			return
-		end
-		if legacy.should_filter_line(line) then
 			return
 		end
 		if line ~= "" then
@@ -274,7 +254,7 @@ function M.decode(ctx, prepared, result)
 	local stderr_text = type(result.stderr) == "string" and result.stderr or ""
 	local has_stderr = false
 	framed.each_line(stderr_text, function(line)
-		if line ~= "" and not legacy.should_filter_line(line) then
+		if line ~= "" then
 			has_stderr = true
 		end
 	end)

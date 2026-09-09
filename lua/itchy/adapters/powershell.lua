@@ -1,34 +1,11 @@
---- PowerShell/pwsh adapter with native invocation metadata (issue #13).
----
---- The user's source runs from a temp file with a same-scope resilience
---- trap appended AFTER the code (existing lines never shift, so native
---- ScriptLineNumber values keep matching buffer lines); a separate launcher
---- defines proxy functions for `Write-Output`, `Write-Host`,
---- `Write-Warning` and `Write-Error`. Each proxy captures its call site
---- inline with native call-stack metadata (`Get-PSCallStack` line/column via
---- `Position`, file via `ScriptName`) BEFORE emitting, so helper frames never
---- replace the user location, then reports a nonce-framed structured event through
---- `[Console]::Out` (bypassing PowerShell streams, so files and pipes are
---- never polluted with metadata), and finally delegates to the real cmdlet
---- (`Microsoft.PowerShell.Utility\...`) so stream behavior is preserved:
---- `Write-Output` still feeds the success pipeline (`$x = Write-Output 123`,
---- `Write-Output 1 | ForEach-Object { $_ + 1 }`), `Write-Error` still writes
---- error records to the error stream and `$Error` and honors `-ErrorAction` /
---- `$ErrorActionPreference`, and likewise for warning/information streams.
---- No per-line `currentLine` tracking, no source rewriting: comments and
---- strings naming output commands never invoke them, so they can never match.
----
---- Uncaught errors (throw, command-not-found, parse errors) keep their
---- native stderr diagnostics; the adapter selects the `path.ps1:LINE`
---- frame belonging to the user's file. No manufactured `LINE<n>` errors.
---- One adapter serves `pwsh` and Windows PowerShell (`powershell`) where
---- behavior is compatible; syntax stays within their common subset
---- (no `?.`, `??`, ternaries; module-qualified cmdlet names exist on both).
+--- PowerShell adapter. Proxies output cmdlets with call-stack metadata
+--- and executes user source from a temp file. Output records are framed with
+--- ASCII record separators on stdout; uncaught exceptions and syntax errors
+--- are parsed from stderr.
 local M = {}
 
 local event = require("itchy.event")
 local framed = require("itchy.adapters.framed")
-local legacy = require("itchy.adapters.legacy")
 local utils = require("itchy.utils")
 
 M.name = "powershell"
@@ -291,7 +268,7 @@ local function parse_ps_error(stderr_text, user_file)
 		if found_line ~= nil then
 			return
 		end
-		local line = legacy.clean_error_message(raw)
+		local line = utils.clean_error_message(raw)
 		-- `At C:\path\file.ps1:2 char:11` (Windows PowerShell 5.1).
 		local at_path, at_lnum, at_col = line:match("^[Aa]t%s+(.-%.ps1):(%d+)%s+[Cc]har:%s*(%d+)")
 		if at_path ~= nil and utils.is_user_file(at_path, user_file, "itchy_launcher.ps1") then
@@ -309,7 +286,7 @@ local function parse_ps_error(stderr_text, user_file)
 	end)
 	local details = {}
 	framed.each_line(stderr_text, function(raw)
-		local line = legacy.clean_error_message(raw)
+		local line = utils.clean_error_message(raw)
 		-- Detail rows render as `     | <text>`; the `Line |` header itself
 		-- never matches this anchor. Caret/tilde excerpt markers carry no
 		-- message text and are skipped.
@@ -330,7 +307,7 @@ local function parse_ps_error(stderr_text, user_file)
 			if message ~= nil then
 				return
 			end
-			local line = legacy.clean_error_message(raw):match("^%s*(.-)%s*$")
+			local line = utils.clean_error_message(raw):match("^%s*(.-)%s*$")
 			if line == "" or line:match("^Line%s*|") or line:match("%.ps1:%d+") or line:match("^[~^%s]+$") or line:match("^%+") then
 				return
 			end
@@ -503,8 +480,8 @@ function M.decode(ctx, prepared, result)
 				add_framed(record)
 				return
 			end
-			-- Foreign record separator: keep legacy behavior (raw event).
-			if not legacy.should_filter_line(line) and line ~= "" then
+			-- Foreign record separator: emit as raw event.
+			if line ~= "" then
 				table.insert(raw_lines, line)
 			end
 			return
@@ -512,13 +489,13 @@ function M.decode(ctx, prepared, result)
 		local rs_at = line:find(framed.RS, 1, true)
 		if rs_at ~= nil then
 			local prefix = line:sub(1, rs_at - 1)
-			if prefix ~= "" and not legacy.should_filter_line(prefix) then
+			if prefix ~= "" then
 				table.insert(raw_lines, prefix)
 			end
 			handle_stdout_line(line:sub(rs_at))
 			return
 		end
-		if not legacy.should_filter_line(line) and line ~= "" then
+		if line ~= "" then
 			table.insert(raw_lines, line)
 		end
 	end
@@ -558,7 +535,7 @@ function M.decode(ctx, prepared, result)
 	local stderr_text = type(result.stderr) == "string" and result.stderr or ""
 	local has_stderr = false
 	framed.each_line(stderr_text, function(line)
-		if line ~= "" and not legacy.should_filter_line(line) then
+		if line ~= "" then
 			has_stderr = true
 		end
 	end)

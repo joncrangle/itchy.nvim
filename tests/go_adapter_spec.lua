@@ -348,7 +348,7 @@ describe('itchy.adapters.go', function()
     assert(ok)
     local prepared = prepared_or_err
     with_cleanup(prepared, nil, function()
-      -- Same structured pipeline, no legacy involved.
+      -- Same structured pipeline without fallback.
       truthy(prepared.metadata.nonce ~= nil)
       local f = io.open(prepared.metadata.user_file, 'r')
       assert(f ~= nil)

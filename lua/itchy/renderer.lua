@@ -1,6 +1,5 @@
 --- Generic event renderer. Consumes normalized itchy.Event objects and
---- paints virtual lines. Knows nothing about runtimes, filetypes, or the
---- legacy LINE<n> wire protocol.
+--- paints virtual lines into buffer namespaces.
 local M = {}
 
 local config = require("itchy.config")
@@ -35,8 +34,8 @@ local function group_events(events, line_count)
 	return by_line, locationless, invalid
 end
 
---- Notify about a locationless diagnostic, preserving the legacy behavior
---- of surfacing unattributed errors via vim.notify instead of an extmark.
+--- Notify about a locationless diagnostic, surfacing unattributed errors
+--- via vim.notify instead of an extmark.
 ---@param message string
 local function notify_locationless(message)
 	local msg = message or "Unknown error."
@@ -51,22 +50,13 @@ local function notify_locationless(message)
 end
 
 --- Render normalized events into a buffer namespace.
---- Validates 1-based event lines, converts to 0-based extmark rows in this
---- single place, aggregates multiple events per line with ' | ', and keeps
---- stale-run/current-run guards. Never branches on language or filetype.
----
---- Location policy (legacy-compatible): numeric lines beyond the buffer are
---- clamped to the last line, matching the pre-adapter
---- `math.max(0, math.min(line_count - 1, row))` behavior. Wrapper-native
---- diagnostics (e.g. shell arithmetic errors, JS stack frames) report wrapped
---- line numbers that can exceed the source buffer; clamping keeps them visible
---- as extmarks so end-to-end expectations are preserved. Truly locationless
---- events (`line == nil`) still notify. Locationless `stdout` is pinned to
---- row 0 to preserve visible output.
+--- Translates 1-based event lines to 0-based extmark rows, joins multiple
+--- events per line with ' | ', and displays locationless errors via vim.notify.
 ---@param buf integer
 ---@param namespace integer
 ---@param events itchy.Event[]
 ---@param opts? table
+
 ---@field opts.line_count? integer override buffer line count (tests)
 ---@field opts.is_current? fun(): boolean guard; when provided and false, rendering is skipped
 ---@field opts.on_locationless? fun(event: itchy.Event) test hook; defaults to vim.notify
@@ -93,9 +83,9 @@ function M.render(buf, namespace, events, opts)
 		local line_count = opts.line_count or vim.api.nvim_buf_line_count(buf)
 		local by_line, locationless, invalid = group_events(events, line_count)
 
-		-- Legacy compatibility: clamp numeric out-of-range lines to the last
-		-- buffer line instead of dropping/notifying them. Truly locationless
-		-- (nil) and malformed events keep the group_events routing.
+		-- Clamp numeric out-of-range lines to the buffer range instead of
+		-- dropping/notifying them. Truly locationless (nil) and malformed
+		-- events keep the group_events routing.
 		for _, e in ipairs(invalid) do
 			if type(e) == "table" and type(e.message) == "string" and type(e.line) == "number" then
 				local clamped = math.max(1, math.min(line_count, math.floor(e.line)))

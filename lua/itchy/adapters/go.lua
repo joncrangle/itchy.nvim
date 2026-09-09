@@ -1,33 +1,11 @@
---- Go adapter with syntax-aware targeted instrumentation (issue #13).
----
---- Output calls (`fmt.Print/Printf/Println`, `log.Print/Printf/Println`) are
---- identified with the Go Tree-sitter parser, so comments, strings and
---- similarly named methods never match. Only the callee selector is
---- rewritten (`fmt.Println` -> `__itchyFmtPrintln`); argument lists keep
---- their exact line breaks, so multiline calls work and native source lines
---- never shift. Locations come from `runtime.Caller(1)` inside the helper,
---- called directly by the instrumented call site (depth verified by the
---- exact-line e2e tests). Both `fmt.*` and `log.*` output report as
---- `stdout` events (log content is program output, not an error diagnostic);
---- compiler diagnostics and panic stacks keep their
---- native `path:line:col` coordinates; no generated-source offsets.
----
---- The user's (instrumented) source and the helper live in separate files in
---- one temp dir, executed as `go run user.go helper.go`. Bare fragments
---- without a `package` clause are wrapped in `package main`/`func main()`;
---- that explicit header offset is the only source mapping, stored in
---- metadata and applied on decode. Full files map 1:1.
----
---- If the Go Tree-sitter parser is unavailable (Neovim ships none on any
---- version; it comes from the user's own nvim-treesitter setup), an embedded
---- comment/string-aware scanner produces byte-identical rewrites. The Go
---- Tree-sitter parser is therefore never a hard requirement, and the legacy
---- wrapper is never involved on any path.
+--- Go adapter. Identifies fmt and log output calls via Tree-sitter (or an
+--- embedded scanner fallback) and routes them through a runtime helper that
+--- records caller coordinates with runtime.Caller. Compiler diagnostics
+--- and panic traces are parsed from native compiler output.
 local M = {}
 
 local event = require("itchy.event")
 local framed = require("itchy.adapters.framed")
-local legacy = require("itchy.adapters.legacy")
 local utils = require("itchy.utils")
 
 M.name = "go"
@@ -193,8 +171,7 @@ end
 --- the user's own nvim-treesitter setup). It skips line/block comments,
 --- interpreted strings, runes (with escapes) and raw strings, matches only
 --- real `pkg.Method(` calls on single lines, and produces byte-identical
---- rewrites to the Tree-sitter path (verified by test). Never line-regexes,
---- never the legacy wrapper.
+--- rewrites to the Tree-sitter path (verified by test). Never line-regexes.
 ---@param source string
 ---@return string
 local function instrument_lexer(source)
@@ -315,7 +292,6 @@ end
 M._code_uses_package = code_uses_package
 
 --- Instrument with Tree-sitter when available, else the embedded scanner.
---- Never fails and never touches the legacy wrapper.
 ---@param source string
 ---@return string instrumented source
 local function instrument(source)
@@ -364,7 +340,7 @@ local function wrap_fragment(source)
 	return wrapped, #header
 end
 
---- Go helper: framed emit + print/log wrappers using runtime.Caller(1)
+--- Go helper: framed emit + print/log interceptors using runtime.Caller(1)
 --- called directly at the instrumented site (no intermediate frames).
 ---@param nonce string
 ---@return string
@@ -527,8 +503,7 @@ function M.prepare(ctx)
 	end
 
 	-- Tree-sitter when available, else the embedded comment/string-aware
-	-- scanner. Either way every output call is instrumented; the legacy
-	-- wrapper is never involved.
+	-- scanner. Either way every output call is instrumented.
 	local instrumented = instrument(base)
 
 	-- Keep explicit imports used: replacing every fmt/log call can leave the
@@ -612,9 +587,6 @@ function M.decode(ctx, prepared, result)
 			table.insert(events, event.create(record.kind, record.message, loc, record.column))
 			return
 		end
-		if legacy.should_filter_line(line) then
-			return
-		end
 		if line ~= "" and line ~= nil then
 			-- Uninstrumented stdout (os.Stdout writes, external commands) stays
 			-- visible as locationless output; never attribute a fake line.
@@ -645,7 +617,7 @@ function M.decode(ctx, prepared, result)
 			local meaningful = {}
 			framed.each_line(stderr_text, function(line)
 				local t = line:match("^%s*(.-)%s*$")
-				if t == "" or t:match("^#%s") or t:match("^exit%s+status") or legacy.should_filter_line(t) then
+				if t == "" or t:match("^#%s") or t:match("^exit%s+status") then
 					return
 				end
 				-- Already-consumed diagnostic frames; the message lives in events.

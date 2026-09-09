@@ -1,20 +1,9 @@
---- Shared machinery for the shell adapters (issue #16).
----
---- Bash and Zsh intercept `echo`/`printf` with native caller metadata and
---- report framed records through an adapter-private side channel (an event
---- file), so redirections and pipelines are never polluted with metadata.
---- POSIX `sh` uses the same side channel with explicit line numbers passed
---- by a conservative source transformation (see `itchy.adapters.sh`).
----
---- This module owns everything shell-specific about decoding: reading the
---- event file, folding delegated duplicates, and parsing native shell
---- diagnostics. Generic core code (`init.lua`, `executor.lua`,
---- `renderer.lua`, `event.lua`) never sees shell protocols.
+--- Shared helpers for shell adapters (bash, zsh, sh). Handles launcher
+--- templating, sidecar event file decoding, and native shell error parsing.
 local M = {}
 
 local event = require("itchy.event")
 local framed = require("itchy.adapters.framed")
-local legacy = require("itchy.adapters.legacy")
 local utils = require("itchy.utils")
 
 --- Escape a filesystem path for embedding in a double-quoted shell string.
@@ -273,10 +262,10 @@ function M.decode_sidechannel(ctx, prepared, result)
 	end
 
 	framed.each_line(result.stderr, function(line)
-		if line == "" or legacy.should_filter_line(line) then
+		if line == "" then
 			return
 		end
-		local clean = legacy.clean_error_message(line)
+		local clean = utils.clean_error_message(line)
 		if clean:match("^`") then
 			-- Shell source excerpt (bash reprints the offending source
 			-- backtick-quoted after a syntax error): the diagnostic above

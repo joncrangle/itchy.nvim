@@ -1,20 +1,6 @@
---- Bash adapter with native caller-location instrumentation (issue #16).
----
---- The user's source runs unchanged from a temp file, sourced by a managed
---- launcher that shadows `echo`/`printf` with functions. Each function
---- captures its call site inline with native Bash caller metadata
---- (`BASH_LINENO[0]`, the line in the user file where the call was made),
---- emits a nonce-framed structured record to an adapter-private event file,
---- then delegates to the real builtin -- so redirections, pipelines and
---- `command`/`builtin` prefixes behave natively and are never polluted
---- with metadata. `printf -v` assigns a variable without producing output
---- and is delegated untouched (no stdout event). Recursion is impossible:
---- helpers only ever invoke `builtin`, never themselves.
----
---- Uncaught errors keep their native stderr diagnostics (`path: line N:
---- msg`); the adapter selects frames belonging to the user's file and
---- never invents locations. No synthetic per-line state, no source
---- rewriting: comments and strings naming output commands never match.
+--- Bash adapter. Executes user source unchanged via a launcher that intercepts
+--- echo and printf with BASH_LINENO caller tracking. Uncaught errors are
+--- parsed from native stderr diagnostics.
 local M = {}
 
 local framed = require("itchy.adapters.framed")

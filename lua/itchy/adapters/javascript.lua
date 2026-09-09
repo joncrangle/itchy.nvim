@@ -1,16 +1,10 @@
---- JavaScript/TypeScript adapter with minimal source transformation (issue #12).
----
---- The user's source is executed unchanged from a temp file. Console output
---- locations come from runtime-native stack introspection in a separate
---- helper/launcher file (CJS for Node/Bun, ESM for Deno), never from
---- per-line `currentLine` rewriting. Uncaught exceptions keep their native
---- diagnostics; this adapter only selects the first frame belonging to the
---- user's source file. No generated-source offset arithmetic.
+--- JavaScript and TypeScript adapter. Runs user source unchanged via a
+--- helper launcher with runtime stack introspection for console locations
+--- and native error parsing for uncaught exceptions.
 local M = {}
 
 local event = require("itchy.event")
 local framed = require("itchy.adapters.framed")
-local legacy = require("itchy.adapters.legacy")
 local utils = require("itchy.utils")
 
 M.name = "javascript"
@@ -47,8 +41,8 @@ end
 -- user file in its native module context (CJS `require` still works when the
 -- user file is CJS; TypeScript type-stripping applies on import), and a
 -- rejected import is reported as a framed error WITHOUT killing pending
--- async work the module already scheduled (mirrors the legacy wrapper's
--- outer try/catch, which let timers finish after a late top-level throw).
+-- async work the module already scheduled (letting timers finish after
+-- a late top-level throw).
 local ESM_HELPER = [[
 // itchy.nvim JS helper (managed file, do not edit).
 import { format as __itchy_fmt } from "node:util";
@@ -364,20 +358,13 @@ function M.decode(ctx, prepared, result)
 	local events = {}
 
 	framed.each_line(result.stdout, function(line)
-		-- Structured events are nonce-authenticated: decode them before
-		-- any legacy wrapper-noise filtering, so legitimate user output
-		-- that merely resembles noise (e.g. 'window is not defined')
-		-- can never be discarded.
 		local record = framed.decode_line(line, nonce)
 		if record then
 			table.insert(events, event.create(record.kind, record.message, record.line, record.column))
 			return
 		end
-		if legacy.should_filter_line(line) then
-			return
-		end
 		if line ~= "" then
-			-- Ordinary (non-instrumented) stdout stays visible at row 0.
+			-- Ordinary (non-instrumented) stdout stays visible as locationless.
 			table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
 		end
 	end)
@@ -385,7 +372,7 @@ function M.decode(ctx, prepared, result)
 	local stderr_text = type(result.stderr) == "string" and result.stderr or ""
 	local has_stderr = false
 	framed.each_line(stderr_text, function(line)
-		if line ~= "" and not legacy.should_filter_line(line) then
+		if line ~= "" then
 			has_stderr = true
 		end
 	end)

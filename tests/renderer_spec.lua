@@ -173,7 +173,7 @@ describe('itchy.renderer', function()
     eq(#get_marks(buf, ns), 0)
   end)
 
-  it('clamps out-of-range lines to the last line (legacy compat)', function()
+  it('clamps out-of-range lines to the last line', function()
     renderer.render(buf, ns, { { kind = 'stdout', line = 99, message = 'far' } })
     local ok = vim.wait(2000, function()
       return #get_marks(buf, ns) > 0

@@ -1,20 +1,6 @@
---- Zsh adapter with native caller-location instrumentation (issue #16).
----
---- Mirrors the Bash adapter: the user's source runs unchanged from a temp
---- file, sourced by a managed launcher that shadows `echo`/`printf` with
---- functions. Each function captures its call site INLINE with native Zsh
---- caller metadata (`funcfiletrace[1]` from `zsh/parameter`, the user line
---- where the call was made), emits a nonce-framed structured record to an
---- adapter-private event file, then delegates to the real builtin -- so
---- redirections, pipelines and `command`/`builtin` prefixes behave natively
---- and are never polluted with metadata. `printf -v` is delegated
---- untouched (no stdout event).
----
---- The capture must stay inline in the shadowing function: a nested helper
---- doing the capture itself would see the shadowing frame instead of the
---- user location. Uncaught errors keep their native stderr diagnostics
---- (`path:LINE: msg`); the adapter selects frames belonging to the user's
---- file and never invents locations.
+--- Zsh adapter. Executes user source unchanged via a launcher that intercepts
+--- echo and printf with funcfiletrace caller tracking. Uncaught errors are
+--- parsed from native stderr diagnostics.
 local M = {}
 
 local framed = require("itchy.adapters.framed")

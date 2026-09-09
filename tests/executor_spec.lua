@@ -161,14 +161,22 @@ describe('itchy.executor.system execution', function()
       table.insert(recorded, path)
       return path, err
     end
+    local py_cmd = vim.fn.executable('python3') == 1 and 'python3' or 'python'
     runtimes.runtimes['itchytest'] = {
       slowtemp = {
-        cmd = 'python',
+        cmd = py_cmd,
         args = {},
-        offset = 0,
-        wrapper = function(_)
-          return 'import time; time.sleep(30)\n'
-        end,
+        adapter = {
+          name = 'slowtemp',
+          prepare = function(_)
+            return {
+              source = 'import time; time.sleep(30)\n',
+            }
+          end,
+          decode = function(_, _, _)
+            return {}
+          end,
+        },
         temp_file = true,
         env = {},
       },
@@ -291,24 +299,41 @@ describe('itchy buffer-owned execution lifecycle', function()
     runtimes = require 'itchy.runtimes'
 
     itchy._reset_runs()
+    local fake_adapter = {
+      name = 'fake',
+      prepare = function(ctx)
+        return {
+          source = ctx.source,
+        }
+      end,
+      decode = function(ctx, prepared, result)
+        local event = require 'itchy.event'
+        local events = {}
+        if result.stdout then
+          for line in result.stdout:gmatch('[^\r\n]+') do
+            local lnum, msg = line:match('^LINE(%d+):%s*(.*)$')
+            if lnum then
+              table.insert(events, event.create('stdout', msg, tonumber(lnum) + 1))
+            else
+              table.insert(events, event.create('stdout', line, 1))
+            end
+          end
+        end
+        return events
+      end,
+    }
     runtimes.runtimes['itchytest'] = {
       fake = {
         cmd = 'fake-cmd',
         args = {},
-        offset = 0,
-        wrapper = function(code)
-          return code
-        end,
+        adapter = fake_adapter,
         temp_file = false,
         env = {},
       },
       faketemp = {
         cmd = 'fake-cmd',
         args = {},
-        offset = 0,
-        wrapper = function(code)
-          return code
-        end,
+        adapter = fake_adapter,
         temp_file = true,
         env = {},
       },
@@ -489,11 +514,20 @@ describe('itchy buffer-owned execution lifecycle', function()
       table.insert(recorded, path)
       return path, err
     end
-    runtimes.runtimes['itchytest'].faketemp.cmd = 'python'
+    local py_cmd = vim.fn.executable('python3') == 1 and 'python3' or 'python'
+    runtimes.runtimes['itchytest'].faketemp.cmd = py_cmd
     runtimes.runtimes['itchytest'].faketemp.args = {}
-    runtimes.runtimes['itchytest'].faketemp.wrapper = function(code)
-      return 'print("LINE0: temp-ok")\n'
-    end
+    runtimes.runtimes['itchytest'].faketemp.adapter = {
+      name = 'faketemp',
+      prepare = function(ctx)
+        return {
+          source = 'print("LINE0: temp-ok")\n',
+        }
+      end,
+      decode = function(ctx, prepared, result)
+        return {}
+      end,
+    }
     local buf = setup_buf('itchytest', { 'x = 1' })
     itchy.run('faketemp', buf)
     vim.wait(15000, function()

@@ -380,7 +380,7 @@ describe('itchy.adapters.powershell', function()
     if vim.fn.executable('pwsh') ~= 1 then
       return
     end
-    -- Stream behavior (#13): Write-Output must feed the success pipeline.
+    -- Stream behavior: Write-Output must feed the success pipeline.
     local src = '$x = Write-Output 123\nWrite-Output $x\n'
     local ctx = ctx_for(src)
     local prepared = ps.prepare(ctx)
