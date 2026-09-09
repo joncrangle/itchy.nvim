@@ -74,6 +74,10 @@ function M.render(buf, namespace, events, opts)
 	opts = opts or {}
 	local hl_stdout = config.cfg.highlights.stdout
 	local hl_stderr = config.cfg.highlights.stderr
+	-- Single central kind -> highlight mapping (no adapter maps highlights).
+	-- Falls back to the error highlight so user configs predating the
+	-- warning key keep rendering warnings visibly.
+	local hl_warning = config.cfg.highlights.warning or hl_stderr
 	local on_locationless = opts.on_locationless
 
 	vim.schedule(function()
@@ -118,22 +122,31 @@ function M.render(buf, namespace, events, opts)
 
 		for src_line, line_events in pairs(by_line) do
 			local row = src_line - 1
-			---@type string[]
-			local stdout_parts = {}
-			---@type string[]
-			local error_parts = {}
-			for _, e in ipairs(line_events) do
-				if e.kind == "error" or e.kind == "stderr" or e.kind == "warning" then
-					table.insert(error_parts, e.message)
-				else
-					table.insert(stdout_parts, e.message)
-				end
+		---@type string[]
+		local stdout_parts = {}
+		---@type string[]
+		local warning_parts = {}
+		---@type string[]
+		local error_parts = {}
+		for _, e in ipairs(line_events) do
+			if e.kind == "warning" then
+				table.insert(warning_parts, e.message)
+			elseif e.kind == "error" or e.kind == "stderr" then
+				table.insert(error_parts, e.message)
+			else
+				table.insert(stdout_parts, e.message)
 			end
-			if #stdout_parts > 0 then
-				vim.api.nvim_buf_set_extmark(buf, namespace, row, 0, {
-					virt_lines = { { { "  │ ", hl_stdout }, { table.concat(stdout_parts, " | "), hl_stdout } } },
-				})
-			end
+		end
+		if #stdout_parts > 0 then
+			vim.api.nvim_buf_set_extmark(buf, namespace, row, 0, {
+				virt_lines = { { { "  │ ", hl_stdout }, { table.concat(stdout_parts, " | "), hl_stdout } } },
+			})
+		end
+		if #warning_parts > 0 then
+			vim.api.nvim_buf_set_extmark(buf, namespace, row, 0, {
+				virt_lines = { { { "  │ ", hl_warning }, { table.concat(warning_parts, " | "), hl_warning } } },
+			})
+		end
 			if #error_parts > 0 then
 				vim.api.nvim_buf_set_extmark(buf, namespace, row, 0, {
 					virt_lines = { { { "  │ ", hl_stderr }, { table.concat(error_parts, " | "), hl_stderr } } },

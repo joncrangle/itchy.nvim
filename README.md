@@ -144,10 +144,11 @@ require('itchy').get_runtimes()
         },
         debug_mode = false,     -- or true
         --- highlight groups to apply to virtual lines
-        ---@type table<"stdout"|"stderr", string>
+        ---@type table<"stdout"|"stderr"|"warning", string>
         highlights = {
             stdout = 'Comment',
-            stderr = 'Error',
+            stderr = 'DiagnosticError',
+            warning = 'DiagnosticWarn',
         },
         --- integrations to enable
         ---@type table<string, itchy.Integration[]>

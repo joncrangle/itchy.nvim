@@ -71,8 +71,7 @@ describe('itchy.utils', function()
     falsy(M.should_filter_line 'Some real error message')
   end)
 
-  it('create_temp_code_file should create only the source file with correct extension', function()
-    local path, err = M.create_temp_code_file('javascript', 'console.log(1);')
+  it('create_temp_code_file should create only the source file with correct extension', function()    local path, err = M.create_temp_code_file('javascript', 'console.log(1);')
     assert(path ~= nil, tostring(err))
     truthy(path:match '%.js$' ~= nil)
     local f = io.open(path, 'r')
@@ -111,5 +110,54 @@ describe('itchy.utils', function()
       count = count + 1
     end)
     eq(count, 0)
+  end)
+
+  it('project-local temp files never truncate an existing file on collision', function()
+    local proj = vim.fn.tempname() .. '_collide'
+    vim.fn.mkdir(proj, 'p')
+    -- Force every candidate leaf to collide with a real user file.
+    local orig_leaf = M._project_leaf
+    M._project_leaf = function()
+      return '1'
+    end
+    local sentinel = proj .. '/1.js'
+    local f = io.open(sentinel, 'w')
+    assert(f ~= nil)
+    f:write('USER DATA - DO NOT TOUCH')
+    f:close()
+    local ok, err = pcall(function()
+      -- All 32 attempts collide: must fail instead of truncating.
+      local path, _ = M.create_temp_code_file('javascript', 'console.log(1);', proj)
+      assert(path == nil, 'expected failure on exhausted collisions, got: ' .. tostring(path))
+    end)
+    M._project_leaf = orig_leaf
+    local check = io.open(sentinel, 'r')
+    assert(check ~= nil)
+    local content = check:read '*a'
+    check:close()
+    eq(content, 'USER DATA - DO NOT TOUCH')
+    vim.fn.delete(proj, 'rf')
+    if not ok then
+      error(err, 0)
+    end
+  end)
+
+  it('project-local temp files use unique names inside the project', function()
+    local proj = vim.fn.tempname() .. '_unique'
+    vim.fn.mkdir(proj, 'p')
+    local ok, err = pcall(function()
+      local a = M.create_temp_code_file('python', 'print(1)', proj)
+      local b = M.create_temp_code_file('python', 'print(2)', proj)
+      assert(a ~= nil and b ~= nil)
+      truthy(a ~= b)
+      truthy(a:find(proj, 1, true) ~= nil)
+      truthy(b:find(proj, 1, true) ~= nil)
+      M.remove_temp_file(a)
+      M.remove_temp_file(b)
+    end)
+    vim.fn.delete(proj, 'rf')
+    if not ok then
+      error(err, 0)
+    end
   end)
 end)
