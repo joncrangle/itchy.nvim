@@ -125,27 +125,32 @@ describe('itchy.renderer', function()
     eq(#get_marks(buf, ns), 0)
   end)
 
-  it('skips out-of-range lines', function()
+  it('clamps out-of-range lines to the last line (legacy compat)', function()
     renderer.render(buf, ns, { { kind = 'stdout', line = 99, message = 'far' } })
-    vim.wait(500, function()
-      return false
+    local ok = vim.wait(2000, function()
+      return #get_marks(buf, ns) > 0
     end, 50)
-    eq(#get_marks(buf, ns), 0)
+    truthy(ok)
+    local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+    eq(#marks, 1)
+    -- 5-line buffer: clamped to 0-based row 4.
+    eq(marks[1][2], 4)
   end)
 
-  it('surfaces out-of-range errors via on_locationless instead of dropping them', function()
+  it('clamps out-of-range errors to the last line instead of notifying', function()
     local seen = {}
     renderer.render(buf, ns, { { kind = 'error', line = 99, message = 'far boom' } }, {
       on_locationless = function(e)
         table.insert(seen, e)
       end,
     })
-    vim.wait(2000, function()
-      return #seen > 0
+    local ok = vim.wait(2000, function()
+      return #get_marks(buf, ns) > 0
     end, 50)
-    eq(#seen, 1)
-    eq(seen[1].message, 'far boom')
-    eq(#get_marks(buf, ns), 0)
+    truthy(ok)
+    eq(#seen, 0)
+    local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+    eq(marks[1][2], 4)
   end)
 
   it('drops malformed events without rendering', function()

@@ -55,12 +55,14 @@ end
 --- single place, aggregates multiple events per line with ' | ', and keeps
 --- stale-run/current-run guards. Never branches on language or filetype.
 ---
---- Location policy (intentional divergence from the pre-adapter clamp):
---- out-of-range `error`/`warning`/`stderr` events are surfaced via the
---- locationless notify path so diagnostics stay visible instead of being
---- clamped to the last line or silently dropped. Out-of-range `stdout` is
---- still dropped. Locationless `stdout` is pinned to row 0 to preserve
---- visible output.
+--- Location policy (legacy-compatible): numeric lines beyond the buffer are
+--- clamped to the last line, matching the pre-adapter
+--- `math.max(0, math.min(line_count - 1, row))` behavior. Wrapper-native
+--- diagnostics (e.g. shell arithmetic errors, JS stack frames) report wrapped
+--- line numbers that can exceed the source buffer; clamping keeps them visible
+--- as extmarks so end-to-end expectations are preserved. Truly locationless
+--- events (`line == nil`) still notify. Locationless `stdout` is pinned to
+--- row 0 to preserve visible output.
 ---@param buf integer
 ---@param namespace integer
 ---@param events itchy.Event[]
@@ -87,15 +89,14 @@ function M.render(buf, namespace, events, opts)
 		local line_count = opts.line_count or vim.api.nvim_buf_line_count(buf)
 		local by_line, locationless, invalid = group_events(events, line_count)
 
-		-- Out-of-range diagnostics must stay visible: surface errors/warnings
-		-- via the locationless path instead of silently dropping them.
+		-- Legacy compatibility: clamp numeric out-of-range lines to the last
+		-- buffer line instead of dropping/notifying them. Truly locationless
+		-- (nil) and malformed events keep the group_events routing.
 		for _, e in ipairs(invalid) do
-			if
-				type(e) == "table"
-				and (e.kind == "error" or e.kind == "warning" or e.kind == "stderr")
-				and type(e.message) == "string"
-			then
-				table.insert(locationless, e)
+			if type(e) == "table" and type(e.message) == "string" and type(e.line) == "number" then
+				local clamped = math.max(1, math.min(line_count, math.floor(e.line)))
+				by_line[clamped] = by_line[clamped] or {}
+				table.insert(by_line[clamped], e)
 			end
 		end
 
