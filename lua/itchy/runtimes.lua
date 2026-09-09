@@ -46,7 +46,8 @@ end
 ---@param offset? integer
 ---@param temp_file? boolean
 ---@param env? table<string, string>
-function M.create_runtime(ft, cmd, args, offset, temp_file, env)
+---@param adapter? string|itchy.RuntimeAdapter
+function M.create_runtime(ft, cmd, args, offset, temp_file, env, adapter)
   if vim.fn.executable(cmd) ~= 1 then
     return nil
   end
@@ -58,7 +59,7 @@ function M.create_runtime(ft, cmd, args, offset, temp_file, env)
     wrapper = function(code, wrapper_offset)
       return require('itchy.wrappers').create_wrapper(ft, code, wrapper_offset)
     end,
-    adapter = 'legacy',
+    adapter = adapter or 'legacy',
     temp_file = temp_file or false,
     env = env or {},
   }
@@ -74,7 +75,7 @@ local function get_python_runtime()
   end
 
   if cmd then
-    return M.create_runtime('python', cmd, { '-c' }, 26)
+    return M.create_runtime('python', cmd, { '-c' }, 26, false, nil, 'python')
   end
   return nil
 end
@@ -85,18 +86,18 @@ M.available_runtimes = {
     go = M.create_runtime('go', 'go', { 'run' }, 0, true, { GO111MODULE = 'off' }),
   },
   javascript = {
-    bun = M.create_runtime('javascript', 'bun', { 'run' }, 0, true),
-    deno = M.create_runtime('javascript', 'deno', { 'eval' }),
-    node = M.create_runtime('javascript', 'node', { '-e' }),
+    bun = M.create_runtime('javascript', 'bun', { 'run' }, 0, true, nil, 'javascript'),
+    deno = M.create_runtime('javascript', 'deno', { 'eval' }, 0, false, nil, 'javascript'),
+    node = M.create_runtime('javascript', 'node', { '-e' }, 0, false, nil, 'javascript'),
   },
   typescript = {
-    bun = M.create_runtime('typescript', 'bun', { 'run' }, 0, true),
-    deno = M.create_runtime('typescript', 'deno', { 'eval', '--ext=ts' }),
-    node = M.create_runtime('typescript', 'node', { '--no-warnings', '-e' }),
+    bun = M.create_runtime('typescript', 'bun', { 'run' }, 0, true, nil, 'javascript'),
+    deno = M.create_runtime('typescript', 'deno', { 'eval', '--ext=ts' }, 0, false, nil, 'javascript'),
+    node = M.create_runtime('typescript', 'node', { '--no-warnings', '-e' }, 0, false, nil, 'javascript'),
   },
   python = {
     python = get_python_runtime(),
-    uv = M.create_runtime('python', 'uv', { 'run', 'python', '-c' }, 26),
+    uv = M.create_runtime('python', 'uv', { 'run', 'python', '-c' }, 26, false, nil, 'python'),
   },
   -- shell command runtimes
   bash = {
