@@ -77,36 +77,122 @@ function M.should_filter_line(line)
   return require('itchy.adapters.legacy').should_filter_line(line)
 end
 
+--- Leaf-name generator for project-local temp files. Run-unique by
+---construction (pid + time + random), never derived from tempname(), so a
+---generated name cannot equal a pre-existing user file except by adversarial
+---collision. Indirection point so tests can force collisions deterministically.
+---@return string
+function M._project_leaf()
+  if not M._leaf_seeded then
+    M._leaf_seeded = true
+    math.randomseed(os.time() + vim.fn.getpid() + math.floor(vim.uv.hrtime() % 1000000))
+  end
+  return string.format(
+    'itchy-%d-%x-%x',
+    vim.fn.getpid(),
+    math.floor(vim.uv.hrtime() % 4294967295),
+    math.random(0, 16777215)
+  )
+end
+
+--- Whether luv supports exclusive-create ("wx") open mode. Probed once per
+---process against a fresh temp path.
+---@return boolean
+local function supports_wx()
+  if M._wx_supported == nil then
+    M._wx_supported = false
+    local probe = vim.fn.tempname() .. '.itchy-wx-probe'
+    local ok, fd = pcall(vim.uv.fs_open, probe, 'wx', 384)
+    if ok and type(fd) == 'number' then
+      pcall(vim.uv.fs_close, fd)
+      M._wx_supported = true
+    end
+    pcall(os.remove, probe)
+  end
+  return M._wx_supported
+end
+
+--- Sentinel: the project dir is unusable (unwritable); the caller should
+---fall back to the OS temp directory. Any other error propagates.
+local FALLBACK = {}
+
+--- Atomically create a project-local temp file with content. The leaf name
+---is run-unique and creation uses O_EXCL ("wx") semantics, retrying on
+---collision: an existing user file is never truncated. Falls back to an
+---existence-checked plain create on runtimes whose luv predates "wx".
+---@param dir string project directory (must exist)
+---@param extension string file extension without dot
+---@param content string file content
+---@return string? path
+---@return string?|table err message, or FALLBACK when the dir is unusable
+local function create_project_file(dir, extension, content)
+  local use_wx = supports_wx()
+  for _ = 1, 32 do
+    local path = dir .. '/' .. M._project_leaf() .. '.' .. extension
+    if use_wx then
+      local fd, open_err = vim.uv.fs_open(path, 'wx', 384)
+      if fd ~= nil then
+        local _, write_err = vim.uv.fs_write(fd, content, -1)
+        local _, close_err = vim.uv.fs_close(fd)
+        if write_err == nil and close_err == nil then
+          return path, nil
+        end
+        pcall(os.remove, path)
+        return nil, tostring(write_err or close_err)
+      end
+      local msg = tostring(open_err or '')
+      if msg:match('[Mm]ode') then
+        use_wx = false -- retry this name via the fallback below
+      elseif msg:match('[Ee]xist') then
+        -- Name collision: try the next unique name.
+      else
+        return nil, FALLBACK -- EACCES etc: dir unusable
+      end
+    end
+    if not use_wx then
+      if vim.fn.filereadable(path) == 0 and vim.fn.isdirectory(path) == 0 then
+        local file, open_err = io.open(path, 'w')
+        if file then
+          file:write(content)
+          file:close()
+          return path, nil
+        end
+        return nil, FALLBACK
+      end
+      -- Exists: try the next unique name.
+    end
+  end
+  return nil, 'could not create a unique temp file in ' .. dir
+end
+
 --- Create a temporary source-code file for runtimes requiring a file.
 ---Only the source file is created; stdout/stderr are captured via vim.system.
 ---When `dir` is a writable directory, the file is created inside it so
 ---project-relative module resolution (Node relative imports, Python
 ---sibling imports via sys.path) keeps working; otherwise falls back to
 ---the OS temp directory (imports then resolve away from the project).
+---Project-local creation is exclusive: pre-existing files are never
+---truncated, even on leaf-name collision.
 ---@param ft string
 ---@param wrapped_code string
 ---@param dir? string preferred parent directory (e.g. the run cwd)
 ---@return string? path returns nil + error on failure
 ---@return string? err
 function M.create_temp_code_file(ft, wrapped_code, dir)
-  local base
-  local in_project = false
-  if type(dir) == 'string' and dir ~= '' and vim.fn.isdirectory(dir) == 1 then
-    -- Unique leaf inside the project dir; falls back below when unwritable.
-    base = dir:gsub('[/\\]$', '') .. '/' .. vim.fn.fnamemodify(vim.fn.tempname(), ':t')
-    in_project = true
-  else
-    base = vim.fn.tempname()
-  end
   local extension = M.ft_to_ext(ft)
-  local code_file = base .. '.' .. extension
-  local file, open_err = io.open(code_file, 'w')
-  if not file and in_project then
-    -- Project dir not writable (permissions, read-only FS): OS temp dir.
-    base = vim.fn.tempname()
-    code_file = base .. '.' .. extension
-    file, open_err = io.open(code_file, 'w')
+  if type(dir) == 'string' and dir ~= '' and vim.fn.isdirectory(dir) == 1 then
+    local path, err = create_project_file(dir:gsub('[/\\]$', ''), extension, wrapped_code)
+    if path then
+      return path, nil
+    end
+    if err ~= FALLBACK then
+      -- Exhaustion or write failure: propagate, never silently downgrade.
+      return nil, err
+    end
+    -- Project dir unusable: OS temp dir fallback below.
   end
+  local code_file = vim.fn.tempname() .. '.' .. extension
+  local file, open_err = io.open(code_file, 'w')
   if not file then
     return nil, open_err or ('failed to create temp file: ' .. code_file)
   end
