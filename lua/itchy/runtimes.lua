@@ -9,6 +9,7 @@ M.runtimes = {}
 ---@field args string[]
 ---@field offset integer
 ---@field wrapper fun(code: string, offset?: integer): string
+---@field adapter? string|itchy.RuntimeAdapter adapter name or module; defaults to 'legacy'
 ---@field temp_file? boolean
 ---@field env? table<string, string>
 
@@ -57,6 +58,7 @@ function M.create_runtime(ft, cmd, args, offset, temp_file, env)
     wrapper = function(code, wrapper_offset)
       return require('itchy.wrappers').create_wrapper(ft, code, wrapper_offset)
     end,
+    adapter = 'legacy',
     temp_file = temp_file or false,
     env = env or {},
   }

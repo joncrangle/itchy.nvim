@@ -22,7 +22,9 @@ function M.debug_print(...)
   end
 end
 
---- Get the appropriate wrapper for the filetype
+--- Get the appropriate wrapper for the filetype.
+---@deprecated Prefer `require('itchy.adapters.legacy').prepare()` via
+---`require('itchy.adapters').resolve(runtime)`. Kept for backward compatibility.
 ---@param runtime itchy.Runtime
 ---@param code string
 ---@return string
@@ -33,102 +35,46 @@ function M.get_wrapped_code(runtime, code)
   return code
 end
 
---- Clean error messages by removing ANSI escape codes
+--- Clean error messages by removing ANSI escape codes.
+---Canonical implementation lives in `itchy.adapters.legacy`.
 ---@param err string
 ---@return string,_
 function M.clean_error_message(err)
-  return err:gsub('\27%[[%d;]*m', '')
+  return require('itchy.adapters.legacy').clean_error_message(err)
 end
 
---- Parse line-prefixed output to get line number and message
+--- Parse line-prefixed output to get line number and message.
+---Legacy wrapper protocol ("LINE<n>: ..."). Implementation lives in
+---itchy.adapters.legacy; kept here as a backward-compatible alias.
+---Returns the raw 0-based LINE number. Use
+---`require('itchy.adapters.legacy').to_source_line(raw)` to get the
+---1-based `itchy.Event` line.
 ---@param line string
 ---@return integer|nil, string|nil
 function M.parse_line_output(line)
-  -- Strip any carriage returns to handle Windows line endings
-  line = line:gsub('\r', '')
-
-  local line_num_str, msg = line:match '^LINE(%d+):%s*(.+)'
-  if line_num_str and msg then
-    return tonumber(line_num_str), msg
-  end
-
-  return nil, nil
+  return require('itchy.adapters.legacy').parse_line_output(line)
 end
 
---- Process error output to get line number and message
+--- Process error output to get line number and message.
+---Implementation lives in itchy.adapters.legacy; kept here as a
+---backward-compatible alias. Contains no filetype branching itself.
+---Returns a 1-based `itchy.Event` line (nil = locationless). This is a
+---breaking change from the pre-adapter 0-based rows; use
+---`require('itchy.event').is_valid_line` to validate and subtract 1 for
+---0-based extmark rows.
 ---@param ft string
 ---@param err string
 ---@return integer?, string?
 function M.parse_error_output(ft, err)
-  err = err:gsub('\r', '')
-  local line_num_str, msg = err:match 'LINE(%d+):%s*Error:%s*(.+)'
-
-  if line_num_str and msg then
-    return tonumber(line_num_str) or 0, msg
-  end
-
-  if ft == 'typescript' or ft == 'javascript' then
-    local stack_line = err:match 'at eval[^:]+:(%d+):'
-    if stack_line then
-      local row = math.floor((tonumber(stack_line) - 10) / 2)
-      local error_msg = err:match 'Error:%s*(.+)'
-      return row, error_msg
-    end
-  elseif ft == 'python' then
-    local line_num = err:match 'LINE(%d+)'
-    local error_msg = err:match 'Error:%s*(.+)'
-    if line_num and error_msg then
-      return tonumber(line_num) or 0, error_msg
-    end
-  elseif ft == 'go' then
-    -- Match Go runtime errors
-    local runtime_line, runtime_msg = err:match ':(%d+):%s*(.+)'
-    if runtime_line and runtime_msg then
-      return tonumber(runtime_line - 2) or 0, runtime_msg
-    end
-
-    -- Match panic traces like
-    local panic_line = err:match '(%d+)%s+%+0x'
-    if panic_line then
-      return tonumber(panic_line - 1) or 0, 'Panic occurred'
-    end
-  elseif ft == 'bash' or ft == 'sh' or ft == 'zsh' then
-    -- Match standard shell error with line number: "sh: line X: ..."
-    local line_num, error_msg = err:match '^[^:]+:%s*line%s*(%d+):%s*(.+)'
-    if line_num and error_msg then
-      return tonumber(line_num) or 0, error_msg
-    end
-
-    -- Match general error messages without line numbers
-    local general_error = err:match '^[^:]+:%s*(.+)'
-    if general_error then
-      return -1, general_error
-    end
-  end
-
-  local runtime_err_msg = err:match 'error:%s*(.+)'
-  if runtime_err_msg then
-    return -1, runtime_err_msg
-  end
+  return require('itchy.adapters.legacy').parse_error_output(ft, err)
 end
 
---- Check if a line should be filtered based on noise patterns
+--- Check if a line should be filtered based on noise patterns.
+---Canonical implementation lives in `itchy.adapters.legacy`.
 ---@param line string
 ---@return boolean
 function M.should_filter_line(line)
-  local noise_patterns = {
-    "hint: Replace 'window' with 'globalThis'",
-    'window is not defined',
-    '^$', -- Empty lines
-  }
-
-  for _, pattern in ipairs(noise_patterns) do
-    if line:match(pattern) then
-      return true
-    end
-  end
-
-  return false
+  return require('itchy.adapters.legacy').should_filter_line(line)
 end
 
 --- Create a temporary source-code file for runtimes requiring a file.
@@ -161,37 +107,22 @@ end
 
 --- Iterate every non-empty line of captured process output, including a
 ---final line without a trailing newline. Normalizes CRLF/CR.
+---Canonical implementation is `itchy.adapters.legacy.each_line`.
 ---@param text string?
 ---@param fn fun(line: string)
 function M.process_output_text(text, fn)
-  if type(text) ~= 'string' or text == '' then
-    return
-  end
-  text = text:gsub('\r\n', '\n'):gsub('\r', '\n')
-  local start = 1
-  while true do
-    local nl = text:find('\n', start, true)
-    if nl then
-      local line = text:sub(start, nl - 1)
-      if line ~= '' then
-        fn(line)
-      end
-      start = nl + 1
-    else
-      local rest = text:sub(start)
-      if rest ~= '' then
-        fn(rest)
-      end
-      break
-    end
-  end
+  return require('itchy.adapters.legacy').each_line(text, fn)
 end
 
 --- Process a single output line.
+---@deprecated Prefer the adapter pipeline
+---(`adapter.decode` -> `renderer.render`). Kept for backward compatibility.
+---`parse_line_output` returns a raw 0-based LINE number; this helper clamps
+---it to a 0-based extmark row.
 ---@param line string
----@param outputs_by_line table
+---@param outputs_by_line table 0-based row -> text
 ---@param line_count integer
----@param line_mapping table
+---@param line_mapping table optional 0-based row remapping
 function M.process_output(line, outputs_by_line, line_count, line_mapping)
   if not line or line == '' or M.should_filter_line(line) then
     return
@@ -212,11 +143,16 @@ end
 local is_headless = not vim.env.DISPLAY and #vim.api.nvim_list_uis() == 0
 
 --- Process a single error line.
+---@deprecated Prefer the adapter pipeline
+---(`adapter.decode` -> `renderer.render`). Kept for backward compatibility.
+---`parse_error_output` returns a 1-based event line; this helper converts it
+---to a 0-based extmark row before inserting into `errors_by_line`.
 ---@param line string
----@param errors_by_line table
+---@param errors_by_line table 0-based row -> text
 ---@param ft string
 ---@param line_count integer
----@param line_mapping table
+---@param line_mapping table optional mapping; 1-based source lines take
+---precedence, 0-based rows are honored as a legacy fallback
 function M.process_error(line, errors_by_line, ft, line_count, line_mapping)
   if not line or line == '' then
     return
@@ -229,9 +165,10 @@ function M.process_error(line, errors_by_line, ft, line_count, line_mapping)
     return
   end
 
-  local row, error_msg = M.parse_error_output(ft, cleaned_err)
+  local src_line, error_msg = M.parse_error_output(ft, cleaned_err)
 
-  if row == -1 then
+  -- Legacy (-1) and normalized (nil) locationless diagnostics both notify.
+  if src_line == -1 or (src_line == nil and error_msg ~= nil) then
     local msg = error_msg or 'Unknown error.'
     if not is_headless then
       vim.schedule(function()
@@ -242,10 +179,17 @@ function M.process_error(line, errors_by_line, ft, line_count, line_mapping)
         vim.notify('itchy error: ' .. msg, vim.log.levels.ERROR, { title = 'itchy' })
       end)
     end
-  elseif row and error_msg then
-    if row and line_mapping and line_mapping[row] then
+  elseif src_line and error_msg then
+    -- Convert the 1-based event line to a 0-based extmark row.
+    local row = src_line - 1
+    if line_mapping and line_mapping[src_line] ~= nil then
+      -- Explicit 1-based source mapping (adapter-style source_map).
+      local mapped = line_mapping[src_line]
+      row = type(mapped) == 'number' and (mapped >= 1 and mapped - 1 or mapped) or row
+    elseif line_mapping and line_mapping[row] ~= nil then
+      -- Legacy 0-based row mapping fallback.
       row = line_mapping[row]
-    elseif row and row > 0 then
+    else
       -- Ensure row is valid
       row = math.max(0, math.min(line_count - 1, row))
     end
@@ -254,12 +198,14 @@ function M.process_error(line, errors_by_line, ft, line_count, line_mapping)
 end
 
 --- Apply collected outputs and errors as extmarks.
+---@deprecated Prefer `require('itchy.renderer').render(buf, ns, events, opts)`.
+---Kept for backward compatibility. Expects 0-based rows.
 ---Stale/current-run validity is checked inside the scheduled callback so a
 ---run that becomes stale between scheduling and rendering cannot publish.
 ---@param buf integer
 ---@param namespace integer
----@param outputs_by_line table
----@param errors_by_line table
+---@param outputs_by_line table 0-based row -> text
+---@param errors_by_line table 0-based row -> text
 ---@param is_current? fun(): boolean guard; when provided and returns false, rendering is skipped
 function M.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line, is_current)
   local hl_stdout = config.cfg.highlights.stdout

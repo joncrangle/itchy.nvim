@@ -5,6 +5,8 @@ local config = require 'itchy.config'
 local runtimes = require 'itchy.runtimes'
 local utils = require 'itchy.utils'
 local executor = require 'itchy.executor'
+local adapters = require 'itchy.adapters'
+local renderer = require 'itchy.renderer'
 
 ---@class itchy.ActiveRun
 ---@field id integer generation
@@ -267,9 +269,10 @@ function M.run(rt, buf)
 
   local code
   local mode = vim.fn.mode()
-  local line_mapping = {}
 
   ---@attribution @folke https://github.com/folke/snacks.nvim/blob/main/lua/snacks/debug.lua#L82C3-L101C7
+  -- Visual selections preserve original buffer lines by padding omitted
+  -- leading lines with newlines, so runtime-reported lines map directly.
   if mode:find '[vV]' then
     if mode == 'v' then
       vim.cmd 'normal! v'
@@ -289,11 +292,16 @@ function M.run(rt, buf)
     code = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, true), '\n')
   end
 
-  local wrapped_code = utils.get_wrapped_code(runtime, code)
-
-  local line_count = vim.api.nvim_buf_line_count(buf)
-  local outputs_by_line = {}
-  local errors_by_line = {}
+  local adapter = adapters.resolve(runtime)
+  ---@type itchy.AdapterContext
+  local adapter_ctx = {
+    runtime = runtime,
+    filetype = ft,
+    source = code,
+    buf = buf,
+    cwd = vim.fn.getcwd(),
+  }
+  local prepared = adapter.prepare(adapter_ctx)
 
   -- Latest run wins: cancel any previous execution for this buffer.
   invalidate_run(buf, false)
@@ -303,14 +311,27 @@ function M.run(rt, buf)
   end
 
   -- Build argv without shell strings; preserves spaces/special chars.
-  local cmd = { runtime.cmd }
-  for _, arg in ipairs(runtime.args or {}) do
-    table.insert(cmd, arg)
+  -- Adapters prepare source only; argv/env still come from the runtime
+  -- unless a future adapter overrides them via PreparedExecution.
+  local cmd = {}
+  if prepared.cmd then
+    for _, arg in ipairs(prepared.cmd) do
+      table.insert(cmd, arg)
+    end
+  else
+    table.insert(cmd, runtime.cmd)
+    for _, arg in ipairs(runtime.args or {}) do
+      table.insert(cmd, arg)
+    end
   end
 
   local temp_file = nil
-  if runtime.temp_file then
-    local path, terr = utils.create_temp_code_file(ft, wrapped_code)
+  local use_temp_file = prepared.temp_file
+  if use_temp_file == nil then
+    use_temp_file = runtime.temp_file
+  end
+  if use_temp_file then
+    local path, terr = utils.create_temp_code_file(ft, prepared.source)
     if not path then
       vim.notify('itchy: failed to create temp file: ' .. tostring(terr), vim.log.levels.ERROR, { title = 'itchy' })
       return
@@ -318,7 +339,7 @@ function M.run(rt, buf)
     temp_file = path
     table.insert(cmd, path)
   else
-    table.insert(cmd, wrapped_code)
+    table.insert(cmd, prepared.source)
   end
 
   next_run_id = next_run_id + 1
@@ -358,35 +379,35 @@ function M.run(rt, buf)
       return
     end
     assert(result ~= nil)
-    -- Non-zero exits still render stdout/stderr; wrappers surface
-    -- compiler/runtime diagnostics inline.
-    utils.process_output_text(result.stdout, function(line)
-      utils.process_output(line, outputs_by_line, line_count, line_mapping)
-    end)
-    utils.process_output_text(result.stderr, function(line)
-      utils.process_error(line, errors_by_line, ft, line_count, line_mapping)
-    end)
+    -- Non-zero exits still render stdout/stderr; the adapter normalizes
+    -- runtime diagnostics into events and the generic renderer paints them.
+    local events = adapter.decode(adapter_ctx, prepared, result)
 
     cleanup_run_resources(run)
-    -- Keep ownership through the scheduled render: apply_extmarks runs
+    if prepared.cleanup then
+      pcall(prepared.cleanup)
+    end
+    -- Keep ownership through the scheduled render: renderer runs
     -- inside vim.schedule, so a clear/edit arriving between completion and
     -- rendering must still find this run to invalidate it. Releasing here
     -- would make that clear a no-op (nil entry) and let the pending render
     -- resurrect extmarks. Guard requires identity (nil fails); release runs
     -- one tick after render via FIFO vim.schedule ordering.
     local guard_buf = run.buf
-    utils.apply_extmarks(buf, namespace, outputs_by_line, errors_by_line, function()
-      -- Decline rendering when superseded/cleared/invalid. Identity check
-      -- covers superseded (different object), cleared-after-completion
-      -- (nil entry), and cancelled-but-not-yet-replaced.
-      if run.cancelled then
-        return false
-      end
-      if active_runs[guard_buf] ~= run then
-        return false
-      end
-      return vim.api.nvim_buf_is_valid(guard_buf)
-    end)
+    renderer.render(buf, namespace, events, {
+      is_current = function()
+        -- Decline rendering when superseded/cleared/invalid. Identity check
+        -- covers superseded (different object), cleared-after-completion
+        -- (nil entry), and cancelled-but-not-yet-replaced.
+        if run.cancelled then
+          return false
+        end
+        if active_runs[guard_buf] ~= run then
+          return false
+        end
+        return vim.api.nvim_buf_is_valid(guard_buf)
+      end,
+    })
     vim.schedule(function()
       if active_runs[guard_buf] == run then
         active_runs[guard_buf] = nil
@@ -395,8 +416,9 @@ function M.run(rt, buf)
   end
 
   local env = nil
-  if runtime.env and next(runtime.env) ~= nil then
-    env = runtime.env
+  local prepared_env = prepared.env or runtime.env
+  if prepared_env and next(prepared_env) ~= nil then
+    env = prepared_env
   end
 
   local ok, handle_or_err = pcall(executor.execute, {

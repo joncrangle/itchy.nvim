@@ -52,9 +52,17 @@ describe('itchy.utils', function()
   end)
 
   it('parse_error_output should extract correct line numbers and messages', function()
+    -- Legacy 0-based LINE5 normalizes to 1-based source line 6.
     local line, msg = M.parse_error_output('javascript', 'LINE5: Error: Unexpected token')
-    eq(line, 5)
+    eq(line, 6)
     eq(msg, 'Unexpected token')
+  end)
+
+  it('process_error should convert 1-based event lines to 0-based extmark rows', function()
+    local errors = {}
+    M.process_error('LINE5: Error: Unexpected token', errors, 'javascript', 10, {})
+    -- 1-based line 6 -> 0-based row 5.
+    eq(errors[5], 'Unexpected token')
   end)
 
   it('should_filter_line should filter noise patterns', function()
