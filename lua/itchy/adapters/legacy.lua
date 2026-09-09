@@ -90,17 +90,6 @@ function M.parse_error_output(ft, err)
 		if line_num and error_msg then
 			return (tonumber(line_num) or 0) + 1, error_msg
 		end
-	elseif ft == "go" then
-		local runtime_line, runtime_msg = err:match(":(%d+):%s*(.+)")
-		if runtime_line and runtime_msg then
-			-- Legacy Go wrapper prepends lines; native 1-based diagnostic
-			-- minus the wrapper offset, re-expressed as a 1-based event.
-			return (tonumber(runtime_line) or 0) - 1, runtime_msg
-		end
-		local panic_line = err:match("(%d+)%s+%+0x")
-		if panic_line then
-			return tonumber(panic_line) or 1, "Panic occurred"
-		end
 	elseif ft == "bash" or ft == "sh" or ft == "zsh" then
 		local line_num, error_msg = err:match("^[^:]+:%s*line%s*(%d+):%s*(.+)")
 		if line_num and error_msg then

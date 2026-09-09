@@ -71,7 +71,7 @@ local test_cases = {
       'This is a log message',
       'Async operation complete',
       'File error:',
-      'Panic occurred',
+      'divide by zero',
     },
   },
   bash = {

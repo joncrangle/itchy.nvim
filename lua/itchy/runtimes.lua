@@ -83,7 +83,7 @@ end
 ---@type table<string, itchy.Runtime[]>
 M.available_runtimes = {
   go = {
-    go = M.create_runtime('go', 'go', { 'run' }, 0, true, { GO111MODULE = 'off' }),
+    go = M.create_runtime('go', 'go', { 'run' }, 0, true, { GO111MODULE = 'off' }, 'go'),
   },
   javascript = {
     bun = M.create_runtime('javascript', 'bun', { 'run' }, 0, true, nil, 'javascript'),
@@ -114,8 +114,8 @@ M.available_runtimes = {
     cmd = M.create_runtime('dosbatch', 'cmd', { '/c' }),
   },
   ps1 = {
-    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }),
-    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }),
+    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }, 0, false, nil, 'powershell'),
+    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' }, 0, false, nil, 'powershell'),
   },
 }
 
