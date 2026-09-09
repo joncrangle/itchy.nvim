@@ -8,7 +8,7 @@ local M = {}
 ---@field defaults? table<string, string>
 ---@field runtimes? table<string, itchy.Runtime[]>
 ---@field debug_mode? boolean
----@field highlights? table<"stdout"|"stderr", string>
+---@field highlights? table<"stdout"|"stderr"|"warning", string>
 ---@field integrations? table<"snacks", itchy.Integration>
 
 -- stylua: ignore
@@ -29,7 +29,8 @@ local default_config = {
   ---@type table<"stdout"|"stderr", string>
   highlights = {
     stdout = 'Comment',
-    stderr = 'Error',
+    stderr = 'DiagnosticError',
+    warning = 'DiagnosticWarn',
   },
   --- integrations to enable
   ---@type itchy.Integration[]

@@ -72,6 +72,30 @@ describe('itchy.adapters.javascript', function()
     prepared.cleanup()
   end)
 
+  it('decodes framed warning/error kinds for diagnostic highlighting', function()
+    local ctx = ctx_for('')
+    local prepared = js.prepare(ctx)
+    local nonce = prepared.metadata.nonce
+    local function frame(kind, line, msg)
+      return '\30ITCHY:' .. nonce .. ':{"kind":"' .. kind .. '","line":' .. line .. ',"message":"' .. msg .. '"}'
+    end
+    local result = {
+      code = 0,
+      signal = 0,
+      stdout = frame('warning', 2, 'careful') .. '\n' .. frame('error', 3, 'boom') .. '\n',
+      stderr = '',
+    }
+    local events = js.decode(ctx, prepared, result)
+    eq(#events, 2)
+    -- Renderer paints warning/error with the Error highlight; stdout uses
+    -- Comment. Preserving kind here is what keeps diagnostics red.
+    eq(events[1].kind, 'warning')
+    eq(events[1].line, 2)
+    eq(events[2].kind, 'error')
+    eq(events[2].line, 3)
+    prepared.cleanup()
+  end)
+
   it('does not let user output spoof locations', function()
     local ctx = ctx_for('')
     local prepared = js.prepare(ctx)

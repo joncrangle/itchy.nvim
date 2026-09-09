@@ -176,7 +176,7 @@ function __itchy_emit(kind, args) {
 console.log = (...args) => __itchy_emit("stdout", args);
 console.info = (...args) => __itchy_emit("stdout", args);
 console.debug = (...args) => __itchy_emit("stdout", args);
-console.warn = (...args) => __itchy_emit("stdout", args);
+console.warn = (...args) => __itchy_emit("warning", args);
 console.error = (...args) => __itchy_emit("error", args);
 try {
 	await import(__itchy_USER_URL);

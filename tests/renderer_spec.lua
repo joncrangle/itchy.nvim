@@ -9,6 +9,26 @@ local api = vim.api
 ---@param buf integer
 ---@param ns integer
 ---@return string[]
+local function get_hls(buf, ns)
+  local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+  local out = {}
+  for _, mark in ipairs(marks) do
+    if mark[4] and mark[4].virt_lines then
+      for _, line in ipairs(mark[4].virt_lines) do
+        for _, chunk in ipairs(line) do
+          if not chunk[1]:match '^%s*│%s*$' then
+            table.insert(out, chunk[2])
+          end
+        end
+      end
+    end
+  end
+  return out
+end
+
+---@param buf integer
+---@param ns integer
+---@return string[]
 local function get_marks(buf, ns)
   local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
   local out = {}
@@ -77,6 +97,23 @@ describe('itchy.renderer', function()
     local texts = get_marks(buf, ns)
     eq(#texts, 1)
     truthy(texts[1]:find('boom', 1, true) ~= nil)
+    local hls = get_hls(buf, ns)
+    eq(#hls, 1)
+    eq(hls[1], 'DiagnosticError')
+  end)
+
+  it('renders stderr events with error highlighting', function()
+    render_and_wait(buf, ns, { { kind = 'stderr', line = 3, message = 'to-err' } })
+    local hls = get_hls(buf, ns)
+    eq(#hls, 1)
+    eq(hls[1], 'DiagnosticError')
+  end)
+
+  it('renders stdout events with stdout highlighting', function()
+    render_and_wait(buf, ns, { { kind = 'stdout', line = 2, message = 'hi' } })
+    local hls = get_hls(buf, ns)
+    eq(#hls, 1)
+    eq(hls[1], 'Comment')
   end)
 
   it('renders warning events alongside errors', function()
@@ -89,6 +126,9 @@ describe('itchy.renderer', function()
     local texts = get_marks(buf, ns)
     eq(#texts, 1)
     truthy(texts[1]:find('careful', 1, true) ~= nil)
+    local hls = get_hls(buf, ns)
+    eq(#hls, 1)
+    eq(hls[1], 'DiagnosticWarn')
   end)
 
   it('ignores the optional column when rendering', function()
@@ -108,6 +148,14 @@ describe('itchy.renderer', function()
     end, 50)
     local texts = get_marks(buf, ns)
     eq(#texts, 2)
+    local hls = get_hls(buf, ns)
+    eq(#hls, 2)
+    local seen = {}
+    for _, hl in ipairs(hls) do
+      seen[hl] = true
+    end
+    truthy(seen['Comment'])
+    truthy(seen['DiagnosticError'])
   end)
 
   it('routes locationless errors to on_locationless instead of an extmark', function()

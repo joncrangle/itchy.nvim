@@ -74,6 +74,27 @@ describe('itchy.adapters.python', function()
     prepared.cleanup()
   end)
 
+  it('preserves framed error diagnostics from stdout for error highlighting', function()
+    local ctx = ctx_for('')
+    local prepared = py.prepare(ctx)
+    local nonce = prepared.metadata.nonce
+    local result = {
+      code = 0,
+      signal = 0,
+      stdout = '\30ITCHY:'
+        .. nonce
+        .. ':{"kind":"error","line":9,"message":"Caught runtime error: division by zero"}\n',
+      stderr = '',
+    }
+    local events = py.decode(ctx, prepared, result)
+    eq(#events, 1)
+    -- Renderer paints error with the diagnostic error highlight; the
+    -- adapter labels the diagnostic kind, the renderer owns the mapping.
+    eq(events[1].kind, 'error')
+    eq(events[1].line, 9)
+    prepared.cleanup()
+  end)
+
   it('parses native tracebacks to the deepest user frame', function()
     local ctx = ctx_for('')
     local prepared = py.prepare(ctx)

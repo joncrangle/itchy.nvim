@@ -73,7 +73,13 @@ def __itchy_print(*args, sep=" ", end="\n", file=None, flush=False):
                 )
         return
     line, column = __itchy_caller_line()
-    __itchy_emit("stdout", sep.join(str(a) for a in args), line, column)
+    # A print emitted while the interpreter is handling an exception
+    # (e.g. inside an `except` block) is an error diagnostic, mirroring
+    # how console.error/console.warn classify diagnostics in the JS
+    # adapter. Classification uses native interpreter state; locations
+    # still come from the caller frame.
+    kind = "stdout" if __itchy_sys.exc_info()[0] is None else "error"
+    __itchy_emit(kind, sep.join(str(a) for a in args), line, column)
     if flush:
         __itchy_stdout.flush()
 
