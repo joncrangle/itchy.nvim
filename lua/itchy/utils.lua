@@ -77,22 +77,18 @@ function M.should_filter_line(line)
   return require('itchy.adapters.legacy').should_filter_line(line)
 end
 
---- Leaf-name generator for project-local temp files. Run-unique by
----construction (pid + time + random), never derived from tempname(), so a
----generated name cannot equal a pre-existing user file except by adversarial
----collision. Indirection point so tests can force collisions deterministically.
+--- Leaf-name generator for project-local temp files. Unique by construction
+---(pid + nanosecond clock + per-process monotonic counter) without touching
+---the process-global RNG, so other plugins using math.random are unaffected.
+---Never derived from tempname(), so a generated name cannot equal a
+---pre-existing user file except by adversarial collision; the exclusive
+---create loop is the actual safety net. Indirection point so tests can
+---force collisions deterministically.
 ---@return string
+local leaf_counter = 0
 function M._project_leaf()
-  if not M._leaf_seeded then
-    M._leaf_seeded = true
-    math.randomseed(os.time() + vim.fn.getpid() + math.floor(vim.uv.hrtime() % 1000000))
-  end
-  return string.format(
-    'itchy-%d-%x-%x',
-    vim.fn.getpid(),
-    math.floor(vim.uv.hrtime() % 4294967295),
-    math.random(0, 16777215)
-  )
+  leaf_counter = leaf_counter + 1
+  return string.format('itchy-%d-%x-%x', vim.fn.getpid(), math.floor(vim.uv.hrtime() % 4294967295), leaf_counter)
 end
 
 --- Whether luv supports exclusive-create ("wx") open mode. Probed once per
