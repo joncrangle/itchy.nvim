@@ -249,6 +249,26 @@ describe('itchy.adapters.javascript', function()
       local out = vim.system(prepared.cmd, { text = true, timeout = 20000 }):wait()
       local events =
         js.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      if #events ~= 1 then
+        -- TEMPORARY CI diagnostics (removed once the Windows failure is root-caused).
+        local ver = vim.system({ 'node', '--version' }, { text = true }):wait()
+        print(
+          'DIAG js-import: code='
+            .. vim.inspect(out.code)
+            .. ' stdout='
+            .. vim.inspect(out.stdout)
+            .. ' stderr='
+            .. vim.inspect(out.stderr)
+            .. ' node='
+            .. vim.inspect(ver.stdout)
+            .. ' userfile='
+            .. prepared.metadata.user_file
+            .. ' userreadable='
+            .. tostring(vim.fn.filereadable(prepared.metadata.user_file))
+            .. ' helperreadable='
+            .. tostring(vim.fn.filereadable(prepared.cmd[2]))
+        )
+      end
       eq(#events, 1)
       eq(events[1].kind, 'stdout')
       eq(events[1].line, 2)
