@@ -70,23 +70,22 @@ describe('itchy.run powershell rendering', function()
     buf = nil
   end)
 
-  it('paints stdout/warning/error with their highlight groups', function()
+  local function pwsh_ready()
     if vim.fn.executable('pwsh') ~= 1 then
       pending('pwsh not available')
-      return
+      return false
     end
     if not runtimes.runtimes['ps1'] or not runtimes.runtimes['ps1']['pwsh'] then
       pending('pwsh runtime not available for ps1')
-      return
+      return false
     end
+    return true
+  end
 
-    api.nvim_buf_set_lines(buf, 0, -1, false, {
-      'Write-Output "out-hi"',
-      'Write-Host "host-hi"',
-      'Write-Warning "warn-hi"',
-      'Write-Error "err-hi"',
-      'throw "boom-hi"',
-    })
+  --- Run the buffer lines through itchy.run() and return extmark virtual
+  --- lines (text AND highlight groups) by 0-based row.
+  local function run_lines(lines, expected_rows)
+    api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     api.nvim_set_current_buf(buf)
     itchy.run('pwsh', buf)
 
@@ -102,13 +101,49 @@ describe('itchy.run powershell rendering', function()
       for _ in pairs(get_virt_by_row(buf, ns_id)) do
         count = count + 1
       end
-      return count >= 5
+      return count >= expected_rows
     end, 100)
-    assert(marks_wait, 'Expected virtual lines for all five buffer lines')
+    assert(marks_wait, 'Expected virtual lines for all buffer lines')
 
     -- Let any trailing scheduled render settle, then assert exact placement.
     vim.wait(1000)
-    local by_row = get_virt_by_row(buf, ns_id)
+    return get_virt_by_row(buf, ns_id)
+  end
+
+  it('paints a Write-Error with the error highlight (regression)', function()
+    if not pwsh_ready() then
+      return
+    end
+    -- Focused lockdown for the virtual-line regression: event.kind ==
+    -- 'error' is not enough, the extmark's virt_lines themselves must carry
+    -- the configured error highlight (runtimes_spec discards highlights).
+    local by_row = run_lines({ 'Write-Output "normal"', 'Write-Error "failure"' }, 2)
+
+    local hl_stdout = config.cfg.highlights.stdout
+    local hl_stderr = config.cfg.highlights.stderr
+
+    eq(by_row[0][1].text, 'normal')
+    eq(by_row[0][1].hls[2], hl_stdout)
+
+    -- Exactly one virtual line: the native error-stream echo must fold into
+    -- the framed event rather than doubling it, and it must paint hl_stderr.
+    eq(#by_row[1], 1)
+    eq(by_row[1][1].text, 'failure')
+    eq(by_row[1][1].hls[2], hl_stderr)
+  end)
+
+  it('paints stdout/warning/error with their highlight groups', function()
+    if not pwsh_ready() then
+      return
+    end
+
+    local by_row = run_lines({
+      'Write-Output "out-hi"',
+      'Write-Host "host-hi"',
+      'Write-Warning "warn-hi"',
+      'Write-Error "err-hi"',
+      'throw "boom-hi"',
+    }, 5)
     local n = 0
     for _ in pairs(by_row) do
       n = n + 1
