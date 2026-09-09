@@ -39,9 +39,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           # Chrome's apt repo is unrelated to our deps and intermittently
-          # serves inconsistent metadata (Hash Sum mismatch); drop it so a
+          # serves inconsistent metadata (Hash Sum mismatch); drop every
+          # source referencing it (list filename varies by image) so a
           # broken upstream mirror cannot fail dependency setup.
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo grep -rl 'dl.google.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f
+          sudo sed -i '/dl\.google\.com/d' /etc/apt/sources.list 2>/dev/null || true
           sudo apt-get update
           sudo apt-get install -y lua5.1 luarocks
           sudo luarocks install luacheck
@@ -164,9 +167,12 @@ jobs:
       - name: Setup dependencies
         run: |
           # Chrome's apt repo is unrelated to our deps and intermittently
-          # serves inconsistent metadata (Hash Sum mismatch); drop it so a
+          # serves inconsistent metadata (Hash Sum mismatch); drop every
+          # source referencing it (list filename varies by image) so a
           # broken upstream mirror cannot fail dependency setup.
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo grep -rl 'dl.google.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f
+          sudo sed -i '/dl\.google\.com/d' /etc/apt/sources.list 2>/dev/null || true
           sudo apt-get update
           sudo apt-get install -y lua5.1 luarocks python3 nodejs npm zsh
           curl -LsSf https://astral.sh/uv/install.sh | sh

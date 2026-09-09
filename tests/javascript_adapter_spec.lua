@@ -250,7 +250,9 @@ describe('itchy.adapters.javascript', function()
       local events =
         js.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
       if #events ~= 1 then
-        -- TEMPORARY CI diagnostics (removed once the Windows failure is root-caused).
+        -- Failure diagnostics: this test proved flaky on CI Windows
+        -- runners (zero events with no functional change), so dump the
+        -- execution context when the count is unexpected.
         local ver = vim.system({ 'node', '--version' }, { text = true }):wait()
         print(
           'DIAG js-import: code='
