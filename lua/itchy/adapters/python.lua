@@ -26,9 +26,18 @@ end
 local PY_HELPER = [[
 import builtins as __itchy_builtins
 import sys as __itchy_sys
+import os as __itchy_os
 
 __ITCHY_NONCE = "__ITCHY_NONCE__"
 __ITCHY_USER_FILE = "__ITCHY_USER_FILE__"
+
+# Sibling imports (import helper) resolve against the executed source file,
+# mirroring `python path/to/main.py`. Previously `python -c` put the real
+# cwd first on sys.path; the executed file's directory is the robust
+# equivalent now that the source lives in a real file.
+__itchy_dir = __itchy_os.path.dirname(__ITCHY_USER_FILE)
+if __itchy_dir and __itchy_dir not in __itchy_sys.path:
+    __itchy_sys.path.insert(0, __itchy_dir)
 
 __itchy_stdout = __itchy_sys.stdout
 __itchy_orig_print = __itchy_builtins.print
@@ -59,17 +68,26 @@ def __itchy_emit(kind, message, line, column):
 
 def __itchy_print(*args, sep=" ", end="\n", file=None, flush=False):
     target = __itchy_sys.stdout if file is None else file
+    if end is None:
+        end = "\n"
+    text = sep.join(str(a) for a in args)
+    if end != "\n":
+        # Preserve explicit terminators (e.g. end="!"); the default
+        # newline is the framed record separator, not message content.
+        text += end
     if target is not __itchy_sys.stdout:
         # Non-stdout destinations (files, pipes) behave normally. The
         # interpreter itself prints tracebacks via print(file=sys.stderr)
         # from non-user frames: forward those silently so tracebacks are
         # parsed once from real stderr instead of duplicated as events.
+        # The real stream keeps native end= semantics; the event carries
+        # the rendered text.
         __itchy_orig_print(*args, sep=sep, end=end, file=target, flush=flush)
         if target is __itchy_sys.stderr:
             line, column = __itchy_caller_line()
             if line is not None:
                 __itchy_emit(
-                    "stderr", sep.join(str(a) for a in args), line, column
+                    "stderr", text, line, column
                 )
         return
     line, column = __itchy_caller_line()
@@ -79,7 +97,7 @@ def __itchy_print(*args, sep=" ", end="\n", file=None, flush=False):
     # adapter. Classification uses native interpreter state; locations
     # still come from the caller frame.
     kind = "stdout" if __itchy_sys.exc_info()[0] is None else "error"
-    __itchy_emit(kind, sep.join(str(a) for a in args), line, column)
+    __itchy_emit(kind, text, line, column)
     if flush:
         __itchy_stdout.flush()
 
@@ -119,7 +137,7 @@ function M.prepare(ctx)
 	local source = ctx.source or ""
 	local nonce = framed.create_nonce()
 
-	local user_path, uerr = utils.create_temp_code_file("python", source)
+	local user_path, uerr = utils.create_temp_code_file("python", source, utils.project_dir(ctx))
 	if not user_path then
 		error("python adapter: failed to create source file: " .. tostring(uerr))
 	end
@@ -233,16 +251,22 @@ function M.decode(ctx, prepared, result)
 	local seen_stderr = {}
 
 	framed.each_line(result.stdout, function(line)
-		if legacy.should_filter_line(line) then
-			return
-		end
+		-- Structured events are nonce-authenticated: decode them before
+		-- any legacy wrapper-noise filtering, so legitimate user output
+		-- that merely resembles noise (e.g. 'window is not defined')
+		-- can never be discarded.
 		local record = framed.decode_line(line, nonce)
 		if record then
 			if record.kind == "stderr" then
 				seen_stderr[record.message] = true
 			end
 			table.insert(events, event.create(record.kind, record.message, record.line, record.column))
-		elseif line ~= "" then
+			return
+		end
+		if legacy.should_filter_line(line) then
+			return
+		end
+		if line ~= "" then
 			table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
 		end
 	end)

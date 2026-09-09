@@ -16,6 +16,22 @@ local function ctx_for(source, cmd, args, ft)
   }
 end
 
+--- Run fn, always releasing prepared temp files (plus extra) even when an
+--- assertion fails, so red tests never litter the project cwd where temp
+--- sources now live for import resolution.
+local function with_cleanup(prepared, extra, fn)
+  local ok, err = pcall(fn)
+  pcall(function()
+    prepared.cleanup()
+  end)
+  if extra then
+    pcall(extra)
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
 describe('itchy.adapters.javascript', function()
   it('resolves by name through the registry', function()
     eq(adapters.resolve({ adapter = 'javascript' }).name, 'javascript')
@@ -86,14 +102,16 @@ describe('itchy.adapters.javascript', function()
       stderr = '',
     }
     local events = js.decode(ctx, prepared, result)
-    eq(#events, 2)
-    -- Renderer paints warning/error with the Error highlight; stdout uses
-    -- Comment. Preserving kind here is what keeps diagnostics red.
-    eq(events[1].kind, 'warning')
-    eq(events[1].line, 2)
-    eq(events[2].kind, 'error')
-    eq(events[2].line, 3)
-    prepared.cleanup()
+    with_cleanup(prepared, nil, function()
+      eq(#events, 2)
+      -- Renderer paints warning with the warning highlight and error with
+      -- the error highlight. Preserving kind here is what keeps the
+      -- centralized mapping correct.
+      eq(events[1].kind, 'warning')
+      eq(events[1].line, 2)
+      eq(events[2].kind, 'error')
+      eq(events[2].line, 3)
+    end)
   end)
 
   it('does not let user output spoof locations', function()
@@ -163,5 +181,108 @@ describe('itchy.adapters.javascript', function()
     eq(events[1].line, 1)
     eq(events[1].message, 'boom')
     prepared.cleanup()
+  end)
+
+  it('maps native syntax-error preambles to the reported line', function()
+    local ctx = ctx_for('')
+    local prepared = js.prepare(ctx)
+    local user_file = prepared.metadata.user_file
+    -- Node reports syntax failures as a bare path:line preamble with an
+    -- excerpt and caret; no `at` frame references the user file.
+    local result = {
+      code = 1,
+      signal = 0,
+      stdout = '',
+      stderr = user_file
+        .. ':2\nfoo bar!!!\n    ^^^\n\nSyntaxError: Unexpected identifier \'bar\'\n'
+        .. '    at wrapSafe (node:internal/modules/cjs/loader:1866:18)\n',
+    }
+    local events = js.decode(ctx, prepared, result)
+    with_cleanup(prepared, nil, function()
+      eq(#events, 1)
+      eq(events[1].kind, 'error')
+      eq(events[1].line, 2)
+    end)
+  end)
+
+  it('keeps framed records containing legacy noise patterns', function()
+    local ctx = ctx_for('')
+    local prepared = js.prepare(ctx)
+    local nonce = prepared.metadata.nonce
+    -- A nonce-authenticated structured event is never wrapper noise, even
+    -- when its message resembles a filtered pattern.
+    local result = {
+      code = 0,
+      signal = 0,
+      stdout = '\30ITCHY:'
+        .. nonce
+        .. ':{"kind":"stdout","line":1,"message":"window is not defined"}\n',
+      stderr = '',
+    }
+    local events = js.decode(ctx, prepared, result)
+    with_cleanup(prepared, nil, function()
+      eq(#events, 1)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, 1)
+      eq(events[1].message, 'window is not defined')
+    end)
+  end)
+
+  it('executes project-relative imports from the run cwd', function()
+    if vim.fn.executable('node') ~= 1 then
+      return
+    end
+    local proj = vim.fn.tempname() .. '_jsproj'
+    vim.fn.mkdir(proj, 'p')
+    local f = io.open(proj .. '/helper.js', 'w')
+    assert(f ~= nil)
+    f:write('module.exports = { v: 42 };\n')
+    f:close()
+    local ctx = ctx_for("const h = require('./helper.js');\nconsole.log(h.v);\n", 'node', { '-e' })
+    ctx.cwd = proj
+    local prepared = js.prepare(ctx)
+    -- The source file must live in the project so relative imports resolve.
+    truthy(prepared.metadata.user_file:find(proj, 1, true) ~= nil)
+    with_cleanup(prepared, function()
+      vim.fn.delete(proj, 'rf')
+    end, function()
+      local out = vim.system(prepared.cmd, { text = true, timeout = 20000 }):wait()
+      local events =
+        js.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(#events, 1)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, 2)
+      eq(events[1].message, '42')
+    end)
+  end)
+
+  it('renders padded selection sources on original buffer lines', function()
+    if vim.fn.executable('node') ~= 1 then
+      return
+    end
+    local renderer = require('itchy.renderer')
+    -- Visual selections pad omitted leading lines with newlines; native
+    -- locations must then equal original buffer lines (offset of 2 here).
+    local ctx = ctx_for('\n\nconsole.log("sel");\n', 'node', { '-e' })
+    local prepared = js.prepare(ctx)
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '', '', 'console.log("sel");' })
+    with_cleanup(prepared, function()
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end, function()
+      local out = vim.system(prepared.cmd, { text = true, timeout = 20000 }):wait()
+      local events =
+        js.decode(ctx, prepared, { code = out.code, signal = 0, stdout = out.stdout, stderr = out.stderr })
+      eq(#events, 1)
+      eq(events[1].line, 3)
+      local ns = vim.api.nvim_create_namespace('itchy_js_sel_' .. tostring(buf))
+      renderer.render(buf, ns, events, { line_count = 3 })
+      vim.wait(2000, function()
+        return #vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {}) > 0
+      end, 50)
+      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      eq(#marks, 1)
+      eq(marks[1][2], 2)
+    end)
   end)
 end)

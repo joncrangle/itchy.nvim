@@ -39,6 +39,7 @@ end
 ---@field message? string
 
 --- Validate a decoded JSON payload. Returns a normalized record or nil.
+--- JSON null decodes to vim.NIL, which is treated as absent.
 ---@param payload any
 ---@return itchy.FramedRecord?
 local function validate(payload)
@@ -53,12 +54,18 @@ local function validate(payload)
 		return nil
 	end
 	local line = payload.line
+	if line == vim.NIL then
+		line = nil
+	end
 	if line ~= nil then
 		if type(line) ~= "number" or line ~= math.floor(line) or line < 1 then
 			return nil
 		end
 	end
 	local column = payload.column
+	if column == vim.NIL then
+		column = nil
+	end
 	if column ~= nil then
 		if type(column) ~= "number" or column ~= math.floor(column) or column < 1 then
 			return nil

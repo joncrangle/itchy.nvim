@@ -79,21 +79,54 @@ end
 
 --- Create a temporary source-code file for runtimes requiring a file.
 ---Only the source file is created; stdout/stderr are captured via vim.system.
+---When `dir` is a writable directory, the file is created inside it so
+---project-relative module resolution (Node relative imports, Python
+---sibling imports via sys.path) keeps working; otherwise falls back to
+---the OS temp directory (imports then resolve away from the project).
 ---@param ft string
 ---@param wrapped_code string
+---@param dir? string preferred parent directory (e.g. the run cwd)
 ---@return string? path returns nil + error on failure
 ---@return string? err
-function M.create_temp_code_file(ft, wrapped_code)
-  local base = vim.fn.tempname()
+function M.create_temp_code_file(ft, wrapped_code, dir)
+  local base
+  local in_project = false
+  if type(dir) == 'string' and dir ~= '' and vim.fn.isdirectory(dir) == 1 then
+    -- Unique leaf inside the project dir; falls back below when unwritable.
+    base = dir:gsub('[/\\]$', '') .. '/' .. vim.fn.fnamemodify(vim.fn.tempname(), ':t')
+    in_project = true
+  else
+    base = vim.fn.tempname()
+  end
   local extension = M.ft_to_ext(ft)
   local code_file = base .. '.' .. extension
   local file, open_err = io.open(code_file, 'w')
+  if not file and in_project then
+    -- Project dir not writable (permissions, read-only FS): OS temp dir.
+    base = vim.fn.tempname()
+    code_file = base .. '.' .. extension
+    file, open_err = io.open(code_file, 'w')
+  end
   if not file then
     return nil, open_err or ('failed to create temp file: ' .. code_file)
   end
   file:write(wrapped_code)
   file:close()
   return code_file, nil
+end
+
+--- Preferred directory for adapter temp source files: the run working
+---directory when usable, so project-relative module resolution keeps
+---working. Returns nil when unavailable; callers then fall back to the
+---OS temp directory via `create_temp_code_file`.
+---@param ctx itchy.AdapterContext
+---@return string?
+function M.project_dir(ctx)
+  local dir = ctx and ctx.cwd
+  if type(dir) == 'string' and dir ~= '' and vim.fn.isdirectory(dir) == 1 then
+    return dir
+  end
+  return nil
 end
 
 --- Remove a temporary file exactly once (harmless if missing).

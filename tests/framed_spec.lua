@@ -41,6 +41,15 @@ describe('itchy.adapters.framed', function()
     eq(framed.decode_line('\30ITCHY:abc123:{"kind":"stdout","line":-1,"message":"x"}', 'abc123'), nil)
   end)
 
+  it('treats JSON null coordinates as absent', function()
+    local line = '\30ITCHY:abc123:' .. '{"kind":"error","line":2,"column":null,"message":"boom"}'
+    local record = framed.decode_line(line, 'abc123')
+    eq(record.kind, 'error')
+    eq(record.line, 2)
+    eq(record.column, nil)
+    eq(record.message, 'boom')
+  end)
+
   it('sanitizes multiline messages for virtual text', function()
     eq(framed.sanitize_message('a\nb\rc\nd'), 'a b c d')
   end)

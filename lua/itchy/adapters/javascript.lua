@@ -91,6 +91,22 @@ function __itchy_firstUserFrame(stack) {
 	}
 	return null;
 }
+function __itchy_bareUserLoc(stack) {
+	// Node reports syntax failures as a bare "path:line" preamble with a
+	// source excerpt and caret BEFORE any stack frames, and none of the
+	// `at ...` frames reference the user file. Scan those preamble lines.
+	const lines = String(stack || "").split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const t = lines[i].trim();
+		if (!t || t[0] === "^") continue;
+		const m = /^(.*):(\d+)(?::(\d+))?\s*$/.exec(t);
+		if (!m) continue;
+		if (__itchy_matchUser(m[1])) {
+			return { line: parseInt(m[2], 10), col: m[3] ? parseInt(m[3], 10) : null };
+		}
+	}
+	return null;
+}
 function __itchy_userBase() {
 	const u = __itchy_norm(__itchy_USER_URL).replace(/^file:\/\/\//, "").replace(/^file:\/\//, "").replace(/^\/([A-Za-z]:\/)/, "$1");
 	const parts = u.split("/");
@@ -168,8 +184,11 @@ function __itchy_emit(kind, args) {
 	const c = __itchy_caller();
 	const evt = { kind: kind, message: __itchy_fmt(...args) };
 	if (c) {
-		evt.line = c.line;
-		evt.column = c.col;
+		// Omit null coordinates rather than emitting JSON null: a null
+		// column decodes to vim.NIL and would fail record validation,
+		// silently dropping the entire event.
+		if (c.line != null) evt.line = c.line;
+		if (c.col != null) evt.column = c.col;
 	}
 	__itchy_write("\x1eITCHY:" + __ITCHY_NONCE + ":" + JSON.stringify(evt));
 }
@@ -181,12 +200,16 @@ console.error = (...args) => __itchy_emit("error", args);
 try {
 	await import(__itchy_USER_URL);
 } catch (__itchy_loadErr) {
-	const c = __itchy_firstUserFrame(__itchy_loadErr && __itchy_loadErr.stack);
+	// Uncaught load failures (runtime throw or syntax error) keep their
+	// native diagnostics: select the user frame when present, else the
+	// bare path:line preamble Node emits for syntax failures.
+	const __itchy_stack = __itchy_loadErr && __itchy_loadErr.stack;
+	const c = __itchy_firstUserFrame(__itchy_stack) || __itchy_bareUserLoc(__itchy_stack);
 	const msg = (__itchy_loadErr && __itchy_loadErr.message) || String(__itchy_loadErr);
 	const evt = { kind: "error", message: "Error: " + msg };
 	if (c) {
-		evt.line = c.line;
-		evt.column = c.col;
+		if (c.line != null) evt.line = c.line;
+		if (c.col != null) evt.column = c.col;
 	}
 	__itchy_write("\x1eITCHY:" + __ITCHY_NONCE + ":" + JSON.stringify(evt));
 	try {
@@ -208,7 +231,7 @@ function M.prepare(ctx)
 	local source = ctx.source or ""
 	local nonce = framed.create_nonce()
 
-	local user_path, uerr = utils.create_temp_code_file(ctx.filetype, source)
+	local user_path, uerr = utils.create_temp_code_file(ctx.filetype, source, utils.project_dir(ctx))
 	if not user_path then
 		error("javascript adapter: failed to create source file: " .. tostring(uerr))
 	end
@@ -286,6 +309,21 @@ local function find_user_frame(stderr_text, user_file)
 			found_col = tonumber(col)
 		end
 	end)
+	if not found_line then
+		-- Syntax-failure preamble: Node reports a bare "path:line"
+		-- location with excerpt/caret before any `at` frames. Only an
+		-- exact user-file match counts, so excerpts can never hit.
+		framed.each_line(stderr_text, function(line)
+			if found_line then
+				return
+			end
+			local path, lnum, col = line:match("^(.-):(%d+):?(%d*)%s*$")
+			if path and lnum and is_user_frame(path, user_file) then
+				found_line = tonumber(lnum)
+				found_col = col ~= "" and tonumber(col) or nil
+			end
+		end)
+	end
 	return found_line, found_col
 end
 
@@ -326,13 +364,19 @@ function M.decode(ctx, prepared, result)
 	local events = {}
 
 	framed.each_line(result.stdout, function(line)
-		if legacy.should_filter_line(line) then
-			return
-		end
+		-- Structured events are nonce-authenticated: decode them before
+		-- any legacy wrapper-noise filtering, so legitimate user output
+		-- that merely resembles noise (e.g. 'window is not defined')
+		-- can never be discarded.
 		local record = framed.decode_line(line, nonce)
 		if record then
 			table.insert(events, event.create(record.kind, record.message, record.line, record.column))
-		elseif line ~= "" then
+			return
+		end
+		if legacy.should_filter_line(line) then
+			return
+		end
+		if line ~= "" then
 			-- Ordinary (non-instrumented) stdout stays visible at row 0.
 			table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
 		end
