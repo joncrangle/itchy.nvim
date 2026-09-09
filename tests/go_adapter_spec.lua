@@ -265,28 +265,97 @@ describe('itchy.adapters.go', function()
     end)
   end)
 
-  it('falls back to legacy when Tree-sitter is unavailable', function()
-    local orig = go_adapter._has_treesitter
-    go_adapter._has_treesitter = function()
-      return false
+  it('scanner fallback rewrites the same calls without Tree-sitter', function()
+    local src = table.concat({
+      'package main',
+      '',
+      'import "fmt"',
+      'import "log"',
+      '',
+      'func main() {',
+      '  fmt.Println("hello")',
+      '  // fmt.Println("comment")',
+      '  /* log.Println("block") */',
+      '  s := "fmt.Println(\\"str\\") `fmt.Println(\\"raw\\")`"',
+      '  _ = s',
+      '  r := \'x\'',
+      '  _, _ = r, log.Printf("v: %v", 1)',
+      '  myObj.Println("method")',
+      '  other.Println("other")',
+      '  fmtx.Println("prefix")',
+      '  logx.Println("prefix")',
+      '  fmt . Println("spaced")',
+      '  fmt.Println ("space-paren")',
+      '  fmt.Printlnx("suffix")',
+      '}',
+      '',
+    }, '\n')
+    local out = go_adapter._instrument_lexer(src)
+    truthy(out:find('__itchyFmtPrintln("hello")', 1, true) ~= nil)
+    truthy(out:find('__itchyLogPrintf("v: %v", 1)', 1, true) ~= nil)
+    truthy(out:find('__itchyFmtPrintln("spaced")', 1, true) ~= nil)
+    truthy(out:find('__itchyFmtPrintln ("space-paren")', 1, true) ~= nil)
+    truthy(out:find('// fmt.Println("comment")', 1, true) ~= nil)
+    truthy(out:find('myObj.Println("method")', 1, true) ~= nil)
+    truthy(out:find('other.Println("other")', 1, true) ~= nil)
+    truthy(out:find('fmtx.Println("prefix")', 1, true) ~= nil)
+    truthy(out:find('logx.Println("prefix")', 1, true) ~= nil)
+    truthy(out:find('fmt.Printlnx("suffix")', 1, true) ~= nil)
+    eq(#vim.split(out, '\n', { plain = true }), #vim.split(src, '\n', { plain = true }))
+  end)
+
+  it('scanner and Tree-sitter agree byte for byte', function()
+    if not go_adapter._has_treesitter() then
+      pending('Go Tree-sitter parser unavailable; scanner path covered above')
+      return
     end
-    local notified = {}
-    local orig_notify = vim.notify
-    vim.notify = function(msg, ...)
-      table.insert(notified, tostring(msg))
+    local sources = {
+      FULL_SRC,
+      table.concat({
+        'package main',
+        '',
+        'import "fmt"',
+        'import "log"',
+        '',
+        'func main() {',
+        '  fmt.Printf(',
+        '    "value: %v\\n",',
+        '    42,',
+        '  )',
+        '  // log.Println("comment")',
+        '  x := `fmt.Println("raw")`',
+        '  _, _ = x, fmt.Sprint("kept")',
+        '  n, err := fmt.Println("ret")',
+        '  _, _ = n, err',
+        '  fmt . Printf("s: %d", 2)',
+        '  log.Println("done")',
+        '}',
+        '',
+      }, '\n'),
+    }
+    for _, src in ipairs(sources) do
+      eq(go_adapter._instrument_lexer(src), go_adapter._instrument_ts(src))
     end
-    local ok, prepared_or_err = pcall(go_adapter.prepare, ctx_for('fmt.Println("hi")\n'))
-    vim.notify = orig_notify
-    go_adapter._has_treesitter = orig
+  end)
+
+  it('prepare() uses the scanner when Tree-sitter fails', function()
+    local orig = go_adapter._instrument_ts
+    go_adapter._instrument_ts = function()
+      return nil, 'forced unavailable'
+    end
+    local ok, prepared_or_err = pcall(go_adapter.prepare, ctx_for(FULL_SRC))
+    go_adapter._instrument_ts = orig
     assert(ok)
     local prepared = prepared_or_err
-    if prepared.cleanup then
-      pcall(prepared.cleanup)
-    end
-    -- Silent fallback: no noisy notification on every execution.
-    eq(#notified, 0)
-    -- Legacy prepared output preserves current behavior (wrapped source).
-    truthy(type(prepared.source) == 'string')
+    with_cleanup(prepared, nil, function()
+      -- Same structured pipeline, no legacy involved.
+      truthy(prepared.metadata.nonce ~= nil)
+      local f = io.open(prepared.metadata.user_file, 'r')
+      assert(f ~= nil)
+      local content = f:read('*a')
+      f:close()
+      truthy(content:find('__itchyFmtPrintln', 1, true) ~= nil)
+    end)
   end)
 
   it('executes end to end with exact source-line mapping', function()

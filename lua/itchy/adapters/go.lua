@@ -18,8 +18,11 @@
 --- that explicit header offset is the only source mapping, stored in
 --- metadata and applied on decode. Full files map 1:1.
 ---
---- If the Go Tree-sitter parser is unavailable, prepare/decode fall back
---- silently to the legacy compatibility adapter (CMD keeps working there).
+--- If the Go Tree-sitter parser is unavailable (Neovim ships none on any
+--- version; it comes from the user's own nvim-treesitter setup), an embedded
+--- comment/string-aware scanner produces byte-identical rewrites. The Go
+--- Tree-sitter parser is therefore never a hard requirement, and the legacy
+--- wrapper is never involved on any path.
 local M = {}
 
 local event = require("itchy.event")
@@ -51,9 +54,11 @@ function M._has_treesitter()
 end
 
 --- Instrument only relevant call selectors via Tree-sitter.
+--- Returns nil + error when the parser is unavailable so the caller can
+--- use the embedded scanner instead.
 ---@param source string
 ---@return string?, string? instrumented source or nil + error
-local function instrument(source)
+local function instrument_ts(source)
 	local ok_parser, parser = pcall(vim.treesitter.get_string_parser, source, "go")
 	if not ok_parser or parser == nil then
 		return nil, "go treesitter parser unavailable"
@@ -126,6 +131,142 @@ local function instrument(source)
 		end
 	end
 	return table.concat(lines, "\n"), nil
+end
+
+--- Pure-Lua fallback scanner: comment- and string-aware rewrite of the same
+--- `fmt|log.Print*` call selectors. Used only when the Go Tree-sitter parser
+--- is unavailable (Neovim ships no `go` parser on any version; it comes from
+--- the user's own nvim-treesitter setup). It skips line/block comments,
+--- interpreted strings, runes (with escapes) and raw strings, matches only
+--- real `pkg.Method(` calls on single lines, and produces byte-identical
+--- rewrites to the Tree-sitter path (verified by test). Never line-regexes,
+--- never the legacy wrapper.
+---@param source string
+---@return string
+local function instrument_lexer(source)
+	local n = #source
+	local out = {}
+	local i = 1
+	local function is_ident(b)
+		return b ~= nil
+			and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95)
+	end
+	local function is_gap(b)
+		return b == 32 or b == 9
+	end
+	-- Try to match `fmt|log . Method (` at byte pos (normal state only).
+	-- Returns the REWRITES key and the selector end byte, or nil.
+	local function try_selector(pos)
+		local pkg = nil
+		if source:sub(pos, pos + 2) == "fmt" then
+			pkg = "fmt"
+		elseif source:sub(pos, pos + 2) == "log" then
+			pkg = "log"
+		else
+			return nil
+		end
+		if pos > 1 and is_ident(source:byte(pos - 1)) then
+			return nil
+		end
+		local j = pos + 3
+		while j <= n and is_gap(source:byte(j)) do
+			j = j + 1
+		end
+		if source:byte(j) ~= 46 then -- '.'
+			return nil
+		end
+		j = j + 1
+		while j <= n and is_gap(source:byte(j)) do
+			j = j + 1
+		end
+		for _, m in ipairs({ "Println", "Printf", "Print" }) do -- longest first
+			if source:sub(j, j + #m - 1) == m then
+				local k = j + #m
+				if k <= n and is_ident(source:byte(k)) then
+					return nil -- e.g. Printlnx: not one of ours
+				end
+				local l = k
+				while l <= n and is_gap(source:byte(l)) do
+					l = l + 1
+				end
+				if source:byte(l) == 40 then -- '('
+					return pkg .. "." .. m, j + #m - 1
+				end
+				return nil
+			end
+		end
+		return nil
+	end
+	-- Copy a quoted span starting at start (quote byte q, backslash escapes).
+	-- Returns the first byte after the span.
+	local function copy_quoted(start, q)
+		local j = start + 1
+		while j <= n do
+			local c = source:byte(j)
+			if c == 92 then -- backslash escapes the next byte
+				j = j + 2
+			elseif c == q then
+				return j + 1
+			else
+				j = j + 1
+			end
+		end
+		return n + 1 -- unterminated: consume rest
+	end
+	while i <= n do
+		local b = source:byte(i)
+		if b == 47 and source:byte(i + 1) == 47 then -- '//' line comment
+			local j = source:find("\n", i, true) or (n + 1)
+			table.insert(out, source:sub(i, j - 1))
+			i = j
+		elseif b == 47 and source:byte(i + 1) == 42 then -- '/*' block comment
+			local e = source:find("*/", i + 2, true)
+			local j = e and (e + 1) or n
+			table.insert(out, source:sub(i, j))
+			i = j + 1
+		elseif b == 34 or b == 39 then -- string / rune literal
+			local j = copy_quoted(i, b)
+			table.insert(out, source:sub(i, j - 1))
+			i = j
+		elseif b == 96 then -- raw string: no escapes
+			local e = source:find("`", i + 1, true)
+			if e then
+				table.insert(out, source:sub(i, e))
+				i = e + 1
+			else -- unterminated: consume rest
+				table.insert(out, source:sub(i, n))
+				i = n + 1
+			end
+		elseif (b == 102 or b == 108) and (i == 1 or not is_ident(source:byte(i - 1))) then -- 'f'/'l'
+			local key, sel_end = try_selector(i)
+			if key then
+				table.insert(out, REWRITES[key])
+				i = sel_end + 1
+			else
+				table.insert(out, source:sub(i, i))
+				i = i + 1
+			end
+		else
+			table.insert(out, source:sub(i, i))
+			i = i + 1
+		end
+	end
+	return table.concat(out)
+end
+
+M._instrument_lexer = instrument_lexer
+M._instrument_ts = instrument_ts
+
+--- Instrument with Tree-sitter when available, else the embedded scanner.
+--- Never fails and never touches the legacy wrapper.
+---@param source string
+---@return string instrumented source
+local function instrument(source)
+	local out = instrument_ts(source)
+	if out ~= nil then
+		return out
+	end
+	return instrument_lexer(source)
 end
 
 M._instrument = instrument
@@ -314,9 +455,6 @@ end
 function M.prepare(ctx)
 	assert(ctx ~= nil, "go adapter requires a context")
 	assert(ctx.runtime ~= nil, "go adapter requires ctx.runtime")
-	if not M._has_treesitter() then
-		return legacy.prepare(ctx)
-	end
 	local runtime = ctx.runtime
 	local source = ctx.source or ""
 	local nonce = framed.create_nonce()
@@ -328,10 +466,10 @@ function M.prepare(ctx)
 		base, header_offset = wrap_fragment(source)
 	end
 
-	local instrumented, ierr = instrument(base)
-	if instrumented == nil then
-		return legacy.prepare(ctx)
-	end
+	-- Tree-sitter when available, else the embedded comment/string-aware
+	-- scanner. Either way every output call is instrumented; the legacy
+	-- wrapper is never involved.
+	local instrumented = instrument(base)
 
 	-- Keep explicit imports used: replacing every fmt/log call can leave the
 	-- import unused (a per-file compile error). Appending a package-level
@@ -395,9 +533,6 @@ end
 ---@return itchy.Event[]
 function M.decode(ctx, prepared, result)
 	local metadata = (prepared and prepared.metadata) or {}
-	if metadata.nonce == nil then
-		return legacy.decode(ctx, prepared, result)
-	end
 	local nonce = metadata.nonce
 	local user_file = metadata.user_file or ""
 	local header_offset = metadata.header_offset or 0

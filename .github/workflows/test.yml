@@ -130,6 +130,10 @@ jobs:
             go build -o NUL tests/test_files/go.go
           }
 
+      - name: Setup MSVC for Tree-sitter parser build (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Assert expected backend is selected
         if: matrix.os != 'windows-latest'
         run: nvim --headless --noplugin -u NONE --cmd "set rtp+=." -l tests/backend_check.lua
