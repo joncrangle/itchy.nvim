@@ -6,10 +6,8 @@ M.runtimes = {}
 
 ---@class itchy.Runtime
 ---@field cmd string
----@field args string[]
----@field offset integer
----@field wrapper fun(code: string, offset?: integer): string
----@field adapter? string|itchy.RuntimeAdapter adapter name or module; defaults to 'legacy'
+---@field args? string[]
+---@field adapter string|itchy.RuntimeAdapter adapter name or custom adapter module
 ---@field temp_file? boolean
 ---@field env? table<string, string>
 
@@ -40,14 +38,13 @@ function M.get_runtime(ft, name)
 end
 
 --- Create a runtime configuration
----@param ft string
 ---@param cmd string
----@param args string[]
----@param offset? integer
+---@param args? string[]
+---@param adapter string|itchy.RuntimeAdapter
 ---@param temp_file? boolean
 ---@param env? table<string, string>
----@param adapter? string|itchy.RuntimeAdapter
-function M.create_runtime(ft, cmd, args, offset, temp_file, env, adapter)
+---@return itchy.Runtime?
+function M.create_runtime(cmd, args, adapter, temp_file, env)
   if vim.fn.executable(cmd) ~= 1 then
     return nil
   end
@@ -55,11 +52,7 @@ function M.create_runtime(ft, cmd, args, offset, temp_file, env, adapter)
   return {
     cmd = cmd,
     args = args,
-    offset = offset or 0,
-    wrapper = function(code, wrapper_offset)
-      return require('itchy.wrappers').create_wrapper(ft, code, wrapper_offset)
-    end,
-    adapter = adapter or 'legacy',
+    adapter = adapter,
     temp_file = temp_file or false,
     env = env or {},
   }
@@ -75,53 +68,45 @@ local function get_python_runtime()
   end
 
   if cmd then
-    return M.create_runtime('python', cmd, { '-c' }, 26, false, nil, 'python')
+    return M.create_runtime(cmd, { '-c' }, 'python')
   end
   return nil
 end
 
----@type table<string, itchy.Runtime[]>
+---@type table<string, table<string, itchy.Runtime?>>
 M.available_runtimes = {
   go = {
-    go = M.create_runtime('go', 'go', { 'run' }, 0, true, { GO111MODULE = 'off' }, 'go'),
+    go = M.create_runtime('go', { 'run' }, 'go', true, { GO111MODULE = 'off' }),
   },
   javascript = {
-    bun = M.create_runtime('javascript', 'bun', { 'run' }, 0, true, nil, 'javascript'),
-    deno = M.create_runtime('javascript', 'deno', { 'eval' }, 0, false, nil, 'javascript'),
-    node = M.create_runtime('javascript', 'node', { '-e' }, 0, false, nil, 'javascript'),
+    bun = M.create_runtime('bun', { 'run' }, 'javascript', true),
+    deno = M.create_runtime('deno', { 'eval' }, 'javascript', false),
+    node = M.create_runtime('node', { '-e' }, 'javascript', false),
   },
   typescript = {
-    bun = M.create_runtime('typescript', 'bun', { 'run' }, 0, true, nil, 'javascript'),
-    deno = M.create_runtime('typescript', 'deno', { 'eval', '--ext=ts' }, 0, false, nil, 'javascript'),
-    node = M.create_runtime('typescript', 'node', { '--no-warnings', '-e' }, 0, false, nil, 'javascript'),
+    bun = M.create_runtime('bun', { 'run' }, 'javascript', true),
+    deno = M.create_runtime('deno', { 'eval', '--ext=ts' }, 'javascript', false),
+    node = M.create_runtime('node', { '-e' }, 'javascript', false),
   },
   python = {
     python = get_python_runtime(),
-    uv = M.create_runtime('python', 'uv', { 'run', 'python', '-c' }, 26, false, nil, 'python'),
+    uv = M.create_runtime('uv', { 'run', 'python', '-c' }, 'python'),
   },
-  -- shell command runtimes (native caller-location adapters for bash/zsh,
-  -- isolated POSIX-safe compatibility instrumentation for sh; issue #16)
   bash = {
-    bash = M.create_runtime('bash', 'bash', {}, 0, false, nil, 'bash'),
+    bash = M.create_runtime('bash', {}, 'bash'),
   },
   zsh = {
-    zsh = M.create_runtime('zsh', 'zsh', {}, 0, false, nil, 'zsh'),
+    -- Do not let a user's zshrc alter the fixture's options, aliases, or
+    -- error handling. The adapter supplies its own launcher and source file.
+    zsh = M.create_runtime('zsh', { '-f' }, 'zsh'),
   },
   sh = {
-    sh = M.create_runtime('sh', 'sh', {}, 0, false, nil, 'sh'),
-  },
-  -- windows shell runtimes
-  dosbatch = {
-    cmd = M.create_runtime('dosbatch', 'cmd', { '/c' }),
+    sh = M.create_runtime('sh', {}, 'sh'),
   },
   ps1 = {
-    -- -ExecutionPolicy Bypass: Windows client SKUs default to Restricted,
-    -- which refuses to run even local temp-file scripts (no virtual lines
-    -- at all, only a SecurityError on stderr); Bypass is a no-op where
-    -- scripts already run (macOS/Linux, pwsh defaults). The powershell
-    -- adapter swaps the trailing -Command for -File <launcher>.
-    pwsh = M.create_runtime('ps1', 'pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 0, false, nil, 'powershell'),
-    powershell = M.create_runtime('ps1', 'powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 0, false, nil, 'powershell'),
+    -- -ExecutionPolicy Bypass permits temp scripts to execute under Windows defaults.
+    pwsh = M.create_runtime('pwsh', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 'powershell'),
+    powershell = M.create_runtime('powershell', { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }, 'powershell'),
   },
 }
 

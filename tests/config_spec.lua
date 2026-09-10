@@ -64,18 +64,22 @@ describe('itchy.nvim setup', function()
   end)
 
   it('merges user-defined runtime opts', function()
-    local wrapper_called = false
-    local test_wrapper = function(code, _)
-      wrapper_called = true
-      return code .. ' -- wrapped'
-    end
+    local custom_adapter = {
+      name = 'custom',
+      prepare = function(ctx)
+        return { source = ctx.source }
+      end,
+      decode = function(_, _, _)
+        return {}
+      end,
+    }
 
     itchy.setup {
       runtimes = {
         python = {
           python = {
-            args = { '-c' },
-            wrapper = test_wrapper,
+            args = { '-O' },
+            adapter = custom_adapter,
           },
         },
       },
@@ -85,17 +89,12 @@ describe('itchy.nvim setup', function()
     assert.is_table(runtimes.runtimes.python.python)
 
     -- Check that args were merged correctly
-    same(runtimes.runtimes.python.python.args, { '-c' })
+    same(runtimes.runtimes.python.python.args, { '-O' })
 
-    -- Test wrapper is correctly assigned
+    -- Test adapter is correctly assigned
     local cmd = runtimes.runtimes.python.python.cmd
     assert.is_true(cmd == 'python' or cmd == 'python3')
-    eq(runtimes.runtimes.python.python.wrapper, test_wrapper)
-
-    -- Test the wrapper function execution
-    local result = runtimes.runtimes.python.python.wrapper('print("test")', 0)
-    eq(result, 'print("test") -- wrapped')
-    truthy(wrapper_called)
+    eq(runtimes.runtimes.python.python.adapter, custom_adapter)
   end)
 
   it('handles empty user runtime configuration', function()

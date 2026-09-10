@@ -1,6 +1,5 @@
 ---@class itchy.EventKind
---- Normalized output/error categories. Renderer maps these to highlights;
---- it never inspects filetypes or runtimes.
+--- Normalized output and error categories mapped to highlights by the renderer.
 
 ---@alias itchy.EventKind
 ---| 'stdout'
@@ -16,12 +15,6 @@
 ---@field path? string optional source path for future adapters
 
 local M = {}
-
---- Documented coordinate convention: Event.line is 1-based source line,
---- matching how runtime diagnostics naturally report locations. Conversion
---- to Neovim's 0-based extmark row happens in exactly one place
---- (itchy.renderer). Column, when provided, is likewise 1-based.
-M.LINE_BASE = 1
 
 ---@param line any
 ---@return boolean
@@ -54,7 +47,7 @@ function M.is_valid_column(col)
 end
 
 --- Construct an event, normalizing locationless markers.
---- Rejects legacy magic values (e.g. line = -1); callers must use nil.
+--- Rejects magic sentinel values (e.g. line = -1); callers must use nil.
 ---@param kind itchy.EventKind
 ---@param message string
 ---@param line? integer 1-based or nil

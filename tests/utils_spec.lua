@@ -29,47 +29,11 @@ describe('itchy.utils', function()
     eq(printed_output[1], 'test message')
   end)
 
-  it('get_wrapped_code should apply wrapper function', function()
-    local runtime = {
-      wrapper = function(code)
-        return 'wrapped: ' .. code
-      end,
-    }
-    eq(M.get_wrapped_code(runtime, 'code'), 'wrapped: code')
-    ---@diagnostic disable-next-line: param-type-mismatch
-    eq(M.get_wrapped_code(nil, 'code'), 'code')
-  end)
-
   it('clean_error_message should remove ANSI escape codes', function()
     local error_msg = '\27[31mError:\27[0m Something went wrong'
     eq(M.clean_error_message(error_msg), 'Error: Something went wrong')
   end)
 
-  it('parse_line_output should extract line number and message', function()
-    local line_num, msg = M.parse_line_output 'LINE10: Syntax error'
-    eq(line_num, 10)
-    eq(msg, 'Syntax error')
-  end)
-
-  it('parse_error_output should extract correct line numbers and messages', function()
-    -- Legacy 0-based LINE5 normalizes to 1-based source line 6.
-    local line, msg = M.parse_error_output('javascript', 'LINE5: Error: Unexpected token')
-    eq(line, 6)
-    eq(msg, 'Unexpected token')
-  end)
-
-  it('process_error should convert 1-based event lines to 0-based extmark rows', function()
-    local errors = {}
-    M.process_error('LINE5: Error: Unexpected token', errors, 'javascript', 10, {})
-    -- 1-based line 6 -> 0-based row 5.
-    eq(errors[5], 'Unexpected token')
-  end)
-
-  it('should_filter_line should filter noise patterns', function()
-    truthy(M.should_filter_line 'window is not defined')
-    truthy(M.should_filter_line "hint: Replace 'window' with 'globalThis'")
-    falsy(M.should_filter_line 'Some real error message')
-  end)
 
   it('create_temp_code_file should create only the source file with correct extension', function()    local path, err = M.create_temp_code_file('javascript', 'console.log(1);')
     assert(path ~= nil, tostring(err))
@@ -85,32 +49,7 @@ describe('itchy.utils', function()
     falsy(vim.fn.filereadable(path) == 1)
   end)
 
-  it('process_output_text should yield every line including final line without newline', function()
-    local seen = {}
-    M.process_output_text('a\nb\nc', function(line)
-      table.insert(seen, line)
-    end)
-    assert.are.same(seen, { 'a', 'b', 'c' })
-  end)
 
-  it('process_output_text should normalize CRLF and skip empty lines', function()
-    local seen = {}
-    M.process_output_text('a\r\n\r\nb\r c\n', function(line)
-      table.insert(seen, line)
-    end)
-    assert.are.same(seen, { 'a', 'b', ' c' })
-  end)
-
-  it('process_output_text should ignore nil/empty input', function()
-    local count = 0
-    M.process_output_text(nil, function()
-      count = count + 1
-    end)
-    M.process_output_text('', function()
-      count = count + 1
-    end)
-    eq(count, 0)
-  end)
 
   it('project-local temp files never truncate an existing file on collision', function()
     local proj = vim.fn.tempname() .. '_collide'

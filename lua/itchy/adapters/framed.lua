@@ -1,4 +1,4 @@
---- Shared framed-event protocol for structured adapters (issue #12).
+--- Shared framed-event protocol for structured adapters.
 ---
 --- Runtime helpers emit machine-readable records on a dedicated framing that
 --- cannot be confused with normal user output:
@@ -7,9 +7,9 @@
 ---
 --- where <RS> is the ASCII record separator (0x1E), <nonce> is a per-run
 --- random marker, and <json> encodes {kind, line?, column?, message}.
---- Arbitrary user stdout (including JSON-looking text or legacy LINE<n>
---- strings) never starts with the run's nonce marker, so it stays ordinary
---- output. Malformed records are ignored, never fatal.
+--- Arbitrary user stdout (including JSON-looking text) never starts with
+--- the run's nonce marker, so it stays ordinary output. Malformed records
+--- are ignored, never fatal.
 local M = {}
 
 --- Record separator prefix (Lua decimal escape for 0x1E).

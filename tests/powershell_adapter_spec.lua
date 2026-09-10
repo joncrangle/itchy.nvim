@@ -1,17 +1,20 @@
 local ps = require 'itchy.adapters.powershell'
-local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
 local eq = assert.are.equal
 local truthy = assert.is_true
-local falsy = assert.is_false
+
+local pending = pending or function(message)
+  print('SKIPPED: ' .. tostring(message))
+  io.stdout:flush()
+  return true
+end
 
 local function ctx_for(source, cmd)
   return {
     runtime = {
       cmd = cmd or 'pwsh',
       args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' },
-      offset = 0,
     },
     filetype = 'ps1',
     source = source,
@@ -38,10 +41,6 @@ local function run_cmd(prepared)
 end
 
 describe('itchy.adapters.powershell', function()
-  it('resolves by name through the registry', function()
-    eq(adapters.resolve({ adapter = 'powershell' }).name, 'powershell')
-  end)
-
   it('prepare() keeps unknown runtime args such as Bypass', function()
     local ctx = ctx_for('Write-Output "hi"\n')
     ctx.runtime.args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command' }
@@ -145,20 +144,21 @@ describe('itchy.adapters.powershell', function()
     end)
   end)
 
-  it('does not manufacture LINE<n> errors', function()
+  it('surfaces unlocated stderr errors', function()
     local ctx = ctx_for('')
     local prepared = ps.prepare(ctx)
     with_cleanup(prepared, nil, function()
       local result = { code = 1, signal = 0, stdout = '', stderr = 'something broke\n' }
       local events = ps.decode(ctx, prepared, result)
-      for _, e in ipairs(events) do
-        falsy(e.message:match('^LINE%d+') ~= nil)
-      end
+      eq(#events, 1)
+      eq(events[1].line, nil)
+      eq(events[1].message, 'something broke')
     end)
   end)
 
   it('executes all four output commands end to end with exact lines', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell output coverage')
       return
     end
     local src = table.concat({
@@ -192,6 +192,7 @@ describe('itchy.adapters.powershell', function()
 
   it('resolves output inside functions to the call line', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell call-site coverage')
       return
     end
     local src = table.concat({
@@ -221,6 +222,7 @@ describe('itchy.adapters.powershell', function()
 
   it('ignores output command names in comments and strings', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell parser coverage')
       return
     end
     local src = table.concat({
@@ -248,6 +250,7 @@ describe('itchy.adapters.powershell', function()
 
   it('reports thrown exceptions end to end', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell exception coverage')
       return
     end
     local src = table.concat({
@@ -278,6 +281,7 @@ describe('itchy.adapters.powershell', function()
 
   it('reports parse errors end to end', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell parse diagnostics')
       return
     end
     local src = table.concat({
@@ -305,6 +309,7 @@ describe('itchy.adapters.powershell', function()
 
   it('handles multiline pipelines end to end', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell pipeline coverage')
       return
     end
     local src = table.concat({
@@ -334,6 +339,7 @@ describe('itchy.adapters.powershell', function()
 
   it('renders padded selection sources on original buffer lines', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for PowerShell selection mapping coverage')
       return
     end
     -- Visual selection starting at buffer line 3: pad omitted lines.
@@ -356,6 +362,7 @@ describe('itchy.adapters.powershell', function()
 
   it('runs under Windows PowerShell where available', function()
     if vim.fn.executable('powershell') ~= 1 then
+      pending('powershell.exe is not available on this host')
       return
     end
     local ctx = ctx_for('Write-Output "winps"\n', 'powershell')
@@ -378,9 +385,10 @@ describe('itchy.adapters.powershell', function()
 
   it('preserves Write-Output pipeline assignment end to end', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for Write-Output stream coverage')
       return
     end
-    -- Stream behavior (#13): Write-Output must feed the success pipeline.
+    -- Stream behavior: Write-Output must feed the success pipeline.
     local src = '$x = Write-Output 123\nWrite-Output $x\n'
     local ctx = ctx_for(src)
     local prepared = ps.prepare(ctx)
@@ -399,6 +407,7 @@ describe('itchy.adapters.powershell', function()
 
   it('flows Write-Output through downstream pipeline stages', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for downstream pipeline coverage')
       return
     end
     local src = 'Write-Output 1 | ForEach-Object { $_ + 1 }\n'
@@ -426,6 +435,7 @@ describe('itchy.adapters.powershell', function()
 
   it('accepts pipeline input in Write-Error and Write-Warning', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for diagnostic pipeline coverage')
       return
     end
     local src = '"oops-pipe" | Write-Error\n"warn-pipe" | Write-Warning\n'
@@ -448,6 +458,7 @@ describe('itchy.adapters.powershell', function()
 
   it('reports -ErrorAction Stop once and keeps the resilience trap', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for ErrorAction coverage')
       return
     end
     local src = 'Write-Error "oops" -ErrorAction Stop\nWrite-Output "after"\n'
@@ -471,6 +482,7 @@ describe('itchy.adapters.powershell', function()
 
   it('keeps named Write-Error parameters out of the message', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for named error parameter coverage')
       return
     end
     local src = 'Write-Error -Message "x" -Category InvalidOperation\n'
@@ -492,6 +504,7 @@ describe('itchy.adapters.powershell', function()
 
   it('records delegated errors in $Error', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for delegated error state coverage')
       return
     end
     local src = 'Write-Error "rec-me"\nWrite-Output $Error.Count\n'
@@ -511,6 +524,7 @@ describe('itchy.adapters.powershell', function()
 
   it('folds multi-object delegation echoes into one event', function()
     if vim.fn.executable('pwsh') ~= 1 then
+      pending('pwsh is required for multi-object output coverage')
       return
     end
     -- `echo a b c` reports once ("a b c") while the native delegation prints

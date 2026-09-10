@@ -41,11 +41,7 @@ local function cleanup_run_resources(run)
   end
 end
 
---- Exactly-once adapter cleanup, analogous to cleanup_run_resources().
---- PreparedExecution.cleanup is part of the adapter contract (#11); future
---- adapters (e.g. JS/Python helper preload/temp resources) may allocate
---- there, so every terminal run path must release it even when the run is
---- stale, cancelled, invalid, or fails before rendering.
+--- Release adapter-allocated resources for a run exactly once.
 ---@param run itchy.ActiveRun
 local function cleanup_prepared(run)
   if run.adapter_cleaned then
@@ -107,11 +103,16 @@ local function invalidate_run(buf, clear_namespace)
         -- buffer's live filetype (which may have changed since the run).
         pcall(vim.api.nvim_buf_clear_namespace, buf, run.namespace, 0, -1)
       else
-        -- Idle clear with no active run: fall back to the live filetype.
         local ft = vim.bo[buf].filetype
         local ns_id = vim.api.nvim_get_namespaces()['itchy_' .. ft .. '_result']
         if ns_id then
           pcall(vim.api.nvim_buf_clear_namespace, buf, ns_id, 0, -1)
+        end
+        if ft == 'lua' and utils.is_snacks_enabled() then
+          local snacks_ns = vim.api.nvim_get_namespaces()['snacks_debug']
+          if snacks_ns then
+            pcall(vim.api.nvim_buf_clear_namespace, buf, snacks_ns, 0, -1)
+          end
         end
       end
     end
@@ -198,18 +199,33 @@ function M.setup(opts)
     supported_fts[ft] = true
   end
 
-  if config.cfg.integrations.snacks and package.loaded['snacks'] then
+  if utils.is_snacks_enabled() and package.loaded['snacks'] then
     local snacks = package.loaded['snacks'].config
+    local clear_key = (type(config.cfg.integrations.snacks) == 'table'
+      and config.cfg.integrations.snacks.keys
+      and config.cfg.integrations.snacks.keys.clear) or '<BS>'
+    local run_key = (type(config.cfg.integrations.snacks) == 'table'
+      and config.cfg.integrations.snacks.keys
+      and config.cfg.integrations.snacks.keys.run) or '<CR>'
     local snacks_lua_opts = { scratch = { win_by_ft = {} } }
     snacks_lua_opts.scratch.win_by_ft['lua'] = {
       keys = {
         ['clear'] = {
-          '<BS>',
+          clear_key,
           function(self)
-            local ns_id = vim.api.nvim_get_namespaces()['snacks_debug']
-            vim.api.nvim_buf_clear_namespace(self.buf, ns_id, 0, -1)
+            -- Let the public clear path handle an as-yet uninitialized
+            -- Snacks debug namespace (and any active Itchy run).
+            require('itchy').clear(self.buf)
           end,
           desc = 'Clear',
+          mode = { 'n', 'x' },
+        },
+        ['run'] = {
+          run_key,
+          function(self)
+            require('itchy').run(self.buf)
+          end,
+          desc = 'Run code',
           mode = { 'n', 'x' },
         },
       },
@@ -268,14 +284,15 @@ function M.run(rt, buf)
     return
   end
   local ft = vim.bo[buf].filetype
-  ensure_runtimes(ft)
 
-  -- snacks.nvim fallback for lua
-  if ft == 'lua' and config.cfg.integrations.snacks and package.loaded['snacks'] then
+  -- snacks.nvim delegation for lua (lua is not an itchy runtime)
+  if ft == 'lua' and utils.is_snacks_enabled() and package.loaded['snacks'] then
     local snacks = package.loaded['snacks']
-    snacks.debug.run()
+    snacks.debug.run({ buf = buf })
     return
   end
+
+  ensure_runtimes(ft)
 
   local runtime, error = runtimes.get_runtime(ft, rt)
   if error then
@@ -311,7 +328,12 @@ function M.run(rt, buf)
     code = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, true), '\n')
   end
 
-  local adapter = adapters.resolve(runtime)
+  local adapter_ok, adapter_or_err = pcall(adapters.resolve, runtime)
+  if not adapter_ok then
+    vim.notify(tostring(adapter_or_err), vim.log.levels.ERROR, { title = 'itchy' })
+    return
+  end
+  local adapter = adapter_or_err
   ---@type itchy.AdapterContext
   local adapter_ctx = {
     runtime = runtime,
@@ -334,9 +356,7 @@ function M.run(rt, buf)
     pcall(vim.api.nvim_buf_clear_namespace, buf, namespace, 0, -1)
   end
 
-  -- Build argv without shell strings; preserves spaces/special chars.
-  -- Adapters prepare source only; argv/env still come from the runtime
-  -- unless a future adapter overrides them via PreparedExecution.
+  -- Build argv from prepared.cmd or runtime cmd/args.
   local cmd = {}
   if prepared.cmd then
     for _, arg in ipairs(prepared.cmd) do
@@ -366,11 +386,7 @@ function M.run(rt, buf)
     temp_file = path
     table.insert(cmd, path)
   elseif not prepared.cmd then
-    -- Legacy adapters hand back a source string to evaluate and rely on the
-    -- core appending it to argv. Adapters that return a complete argv in
-    -- prepared.cmd already materialized their sources, so there is nothing
-    -- to append: an extra element would be a stray multiline argument with
-    -- fragile quoting on some platforms.
+    -- Pass prepared source as the final argument when no cmd override was provided.
     table.insert(cmd, prepared.source)
   end
 
@@ -416,10 +432,7 @@ function M.run(rt, buf)
       return
     end
     assert(result ~= nil)
-    -- Non-zero exits still render stdout/stderr; the adapter normalizes
-    -- runtime diagnostics into events and the generic renderer paints them.
-    -- A throwing decoder must not break run cleanup: treat it as an
-    -- ordinary pipeline failure.
+    -- Adapter normalizes diagnostics into events; decoder errors are handled safely.
     local decode_ok, events_or_err = pcall(adapter.decode, adapter_ctx, prepared, result)
     if not decode_ok then
       cleanup_run_resources(run)
@@ -432,18 +445,11 @@ function M.run(rt, buf)
 
     cleanup_run_resources(run)
     cleanup_prepared(run)
-    -- Keep ownership through the scheduled render: renderer runs
-    -- inside vim.schedule, so a clear/edit arriving between completion and
-    -- rendering must still find this run to invalidate it. Releasing here
-    -- would make that clear a no-op (nil entry) and let the pending render
-    -- resurrect extmarks. Guard requires identity (nil fails); release runs
-    -- one tick after render via FIFO vim.schedule ordering.
+    -- Retain active run ownership until scheduled rendering finishes.
     local guard_buf = run.buf
     renderer.render(buf, namespace, events, {
       is_current = function()
-        -- Decline rendering when superseded/cleared/invalid. Identity check
-        -- covers superseded (different object), cleared-after-completion
-        -- (nil entry), and cancelled-but-not-yet-replaced.
+        -- Skip rendering if superseded, cancelled, or cleared.
         if run.cancelled then
           return false
         end

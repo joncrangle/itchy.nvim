@@ -9,7 +9,7 @@ function divide(x: number, y: number): number {
 try {
 	divide(1, 0);
 } catch (e) {
-	console.error("Error:", e.message);
+	console.error("Error:", (e as Error)?.message ?? e);
 }
 
 // Async test
@@ -19,15 +19,14 @@ async function asyncTest() {
 	try {
 		divide(1, 0);
 	} catch (e) {
-		console.error("Async error:", e.message);
+		console.error("Async error:", (e as Error)?.message ?? e);
 	}
 }
 asyncTest();
 
 // File read error
 try {
-	const fs = await import("fs");
-	fs.readFileSync("non_existent_file.txt", "utf-8");
+  throw new Error("No such file or directory");
 } catch (e) {
-	console.error("File error:", e.message);
+  console.error("File error:", e instanceof Error ? e.message : String(e));
 }

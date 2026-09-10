@@ -1,218 +1,223 @@
-# 🪰 `itchy.nvim`
+# itchy.nvim
 
-When you don't _need_ a debugger. Quickly evaluate code and view output as virtual lines.
+Run code from a buffer or visual selection and inspect stdout and stderr as inline virtual lines.
 
 ![Demo](./assets/demo.gif)
 
-> [!WARNING]
-> This plugin is in early development and may not work as expected.
->
-> It relies on hacks to hijack `stdout`and `stderr`through code wrappers.
+## Features
 
-## ✨ Features
+- Evaluate code from an entire buffer or a visual selection
+- Display stdout and stderr inline as virtual lines
+- Optional [`snacks.nvim`](https://github.com/folke/snacks.nvim) scratch buffer integration
 
-- Quickly evaluate code in a buffer or visual selection
-- View stdout and stderr within the buffer as virtual lines
-- [`snacks.nvim`](https://github.com/folke/snacks.nvim) integration (optional)
-
-## 💻 Supported languages / runtimes
+## Supported languages and runtimes
 
 - Go: `go`
-- JavaScript/TypeScript: `bun`, `deno`, `node`
+- JavaScript and TypeScript: `bun`, `deno`, `node`
 - Python: `python`, `uv`
-- Shell scripts: `bash`, `sh`, `zsh`
-- Windows scripts: `dosbatch` (very buggy), `pwsh`, `powershell`
+- Shell: `bash`, `sh`, `zsh`
+- PowerShell: `pwsh`, `powershell`
 
-Go output locations benefit from Tree-sitter: with the `go` parser installed
-(e.g. via [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)),
-output calls are found syntactically, so comments, strings, and similarly
-named methods never match. Without the parser, a built-in fallback keeps the
-same behavior with no extra setup.
+When nvim-treesitter includes the `go` parser, `itchy.nvim` parses Go syntax trees to target output calls precisely. Strings, comments, and unrelated methods with matching names are ignored. When the parser is missing, an internal scanner performs comment- and string-aware matching instead.
 
-## ⚡ Execution
+## Execution
 
-Subprocesses run through `vim.system()` with argv-style arguments (no shell
-string building), so arguments with spaces or special characters are passed
-through correctly. Runtime environment variables (e.g. Go's `GO111MODULE`)
-are applied to the child process only and never leak into Neovim.
+Subprocesses run through `vim.system()` using argument arrays instead of shell command strings. Arguments with spaces or shell characters pass directly to the process. Environment overrides like Go's `GO111MODULE` apply only to the spawned child process and do not modify Neovim's environment.
 
-- Neovim 0.11 and 0.12 use a callback-based `vim.system()` execution path.
-- Neovim 0.13+ automatically uses `vim.async` structured concurrency to own
-  the subprocess, await completion, and cancel it.
-- No configuration is required; backend selection is automatic. Neovim 0.13
-  is not required to use the plugin.
+Neovim 0.11 and 0.12 use callback-based `vim.system()` jobs. Neovim 0.13 and newer use `vim.async` structured concurrency. Backend selection is automatic.
 
-Each buffer owns at most one execution: starting a new run supersedes the
-previous one, and clearing, editing, or deleting the buffer cancels active
-work so stale results can never overwrite newer output.
+Each buffer tracks at most one active job. Starting a new run cancels the previous job. Editing, clearing, or deleting the buffer cancels active jobs so outdated results never overwrite current buffer contents.
 
-## 📦 Installation
+## Installation
 
-[folke/lazy.nvim](https://github.com/folke/lazy.nvim)
+Using [folke/lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-    'joncrangle/itchy.nvim',
-    event = { 'BufReadPre', 'BufNewFile' },
-    ---@type itchy.Opts
-    opts = {
-        -- your configuration comes here
-        -- or leave it empty to use the default settings
-        -- refer to the configuration section below
-    },
-    -- sample keymapping
-    keys = {
-      { '<leader>td', mode = { 'n', 'v' }, '<cmd>Itchy run<cr>', desc = '[T]est [D]ebug' },
-    },
+  'joncrangle/itchy.nvim',
+  event = { 'BufReadPre', 'BufNewFile' },
+  ---@type itchy.Opts
+  opts = {
+    -- configuration goes here
+  },
+  keys = {
+    { '<leader>td', mode = { 'n', 'v' }, '<cmd>Itchy run<cr>', desc = '[T]est [D]ebug' },
+  },
 }
 ```
 
-## 🚀 Usage
+## Usage
 
-- Within a buffer for a supported filetype `:Itchy run`
+In any buffer with a supported filetype, run `:Itchy run`.
 
 ![Itchy](./assets/itchy.png)
 
-- If using the `snacks.nvim` integration, run within a scratch buffer with default keymap `<CR>`
+Inside a `snacks.nvim` scratch buffer, press `<CR>` to run and `<BS>` to clear.
 
 ![Itchy Snacks](./assets/itchy-snacks.png)
 
 ### Commands
 
-| Command              | Description                                                       |
-|----------------------|-------------------------------------------------------------------|
-| `:Itchy run`         | Run `itchy.nvim` in the current buffer                            |
-| `:Itchy run runtime` | Run `itchy.nvim` in the current buffer with the specified runtime |
-| `:Itchy clear`       | Clear the virtual lines                                           |
-| `:Itchy list`        | List available runtimes for the current filetype                  |
-| `:Itchy current`     | Display the current runtime for the current filetype              |
+| Command                | Description                                      |
+| ---------------------- | ------------------------------------------------ |
+| `:Itchy run`           | Run evaluation on the current buffer             |
+| `:Itchy run <runtime>` | Run evaluation using the specified runtime       |
+| `:Itchy clear`         | Clear virtual lines from the buffer              |
+| `:Itchy list`          | List available runtimes for the current filetype |
+| `:Itchy current`       | Show the active runtime for the current filetype |
 
-Alternatively, you can use `Lua` equivalents:
+Lua API equivalents:
 
 ```lua
---- Run evaluation of a buffer.
---- Shows the output of logs and errors inlined with the code.
----@param rt? string   -- runtime
----@param buf? integer -- buffer, default: current buffer
+--- Run evaluation for a buffer.
+---@param rt? string runtime name
+---@param buf? integer buffer handle, defaults to current buffer
 require('itchy').run(rt, buf)
 
---- Clear extmarks from the buffer.
----@param buf? integer
+--- Clear virtual lines from a buffer.
+---@param buf? integer buffer handle
 require('itchy').clear(buf)
 
---- Print available runtimes for the current buffer.
----@param cmd? boolean
----@param buf? integer
+--- List available runtimes for the current buffer.
+---@param cmd? boolean print commands instead of names
+---@param buf? integer buffer handle
 ---@return string[]?
 require('itchy').list(cmd, buf)
 
---- Print current runtime for the current buffer.
----@param buf? integer
+--- Display the active runtime for the current buffer.
+---@param buf? integer buffer handle
 require('itchy').current(buf)
-```
 
-To get all executable runtimes:
-
-```lua
---- Get all available runtimes.
+--- Get all available runtimes by filetype.
 ---@return table<string, itchy.Runtime[]>
 require('itchy').get_runtimes()
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 <details>
-<summary>Full configuration with default values</summary>
+<summary>Default options</summary>
 
 ```lua
 {
-    'joncrangle/itchy.nvim',
-    event = { 'BufReadPre', 'BufNewFile' },
-    ---@type itchy.Opts
-    opts = {
-        -- your configuration comes here
-        -- or leave it empty to use the default settings
-
-        --- Default runtimes
-        ---@type table<string, string>
-        defaults = {
-            javascript = 'node', -- or 'deno'|'bun'
-            typescript = 'deno', -- or 'node'|'bun'
-            python = 'python',   -- or 'uv'
-            ps1 = 'pwsh',        -- or 'powershell'
-        },
-        -- add additional / custom runtimes
-        -- refer to the configuration section below
-        ---@type table<string, itchy.Runtime>
-        runtimes = {
-            -- Override default runtime configurations or add new ones
-            -- See example below
-        },
-        debug_mode = false,     -- or true
-        --- highlight groups to apply to virtual lines
-        ---@type table<"stdout"|"stderr"|"warning", string>
-        highlights = {
-            stdout = 'Comment',
-            stderr = 'DiagnosticError',
-            warning = 'DiagnosticWarn',
-        },
-        --- integrations to enable
-        ---@type table<string, itchy.Integration[]>
-        integrations = {
-            -- snacks.nvim scratch buffer integration
-            snacks = {
-                enabled = true,     -- or false
-                keys = {
-                    run = '<CR>',   -- Carriage Return (Enter)
-                    clear = '<BS>', -- Backspace
-                }
-            },
-        },
+  'joncrangle/itchy.nvim',
+  event = { 'BufReadPre', 'BufNewFile' },
+  ---@type itchy.Opts
+  opts = {
+    --- Default runtimes per filetype
+    ---@type table<string, string>
+    defaults = {
+      javascript = 'node',
+      typescript = 'deno',
+      python = 'python',
+      ps1 = 'pwsh',
     },
+    --- Custom runtime definitions
+    ---@type table<string, table<string, itchy.Runtime>>
+    runtimes = {},
+    debug_mode = false,
+    --- Highlight groups for virtual lines
+    ---@type table<"stdout"|"stderr"|"warning", string>
+    highlights = {
+      stdout = 'Comment',
+      stderr = 'DiagnosticError',
+      warning = 'DiagnosticWarn',
+    },
+    --- Plugin integrations
+    ---@type table<string, itchy.Integration[]>
+    integrations = {
+      snacks = {
+        enabled = true,
+        keys = {
+          run = '<CR>',
+          clear = '<BS>',
+        },
+      },
+    },
+  },
 }
 ```
 
 </details>
 
 <details>
-<summary>Create a custom runtime</summary>
+<summary>Custom runtimes</summary>
+
+Custom runtimes can reference an existing built-in adapter by name (`'python'`, `'javascript'`, `'go'`, `'bash'`, `'zsh'`, `'sh'`, `'powershell'`) or supply an adapter table implementing `prepare` and `decode`.
 
 ```lua
 ---@class itchy.Runtime
 ---@field cmd string
----@field args string[]
----@field offset integer
----@field wrapper? fun(code: string, offset?: integer): string
+---@field args? string[]
+---@field adapter string|itchy.RuntimeAdapter
 ---@field temp_file? boolean
 ---@field env? table<string, string>
 
--- Example of a custom runtime
+-- Example 1: Custom runtime with a built-in adapter
 opts = {
-    runtimes = {
-        filetype = {             -- the filetype
-            runtime_name = {     -- the name of the custom runtime
-                cmd = 'cmd',     -- the command to run
-                args = { '/c' }, -- arguments to pass to the command
-                -- omit wrapper to use the default filetype wrapper, or:
-                wrapper = function(code, offset)
-                    -- add custom wrapper code here
-                    -- format stdout as LINE{line_number}: {message}
-                    -- if possible, format stderr as LINE:{line_number}: ItchyError: {error_message}
-                    -- otherwise, format stderr or Error: {error_message}
-                    -- return code as a string
-                end,
-            },
-        },
+  runtimes = {
+    python = {
+      my_python = {
+        cmd = 'python3.12',
+        args = { '-c' },
+        adapter = 'python',
+      },
     },
-},
+  },
+}
+
+-- Example 2: Custom runtime with an inline adapter
+opts = {
+  runtimes = {
+    my_lang = {
+      runner = {
+        cmd = 'my-runner',
+        args = { '--run' },
+        temp_file = false,
+        adapter = {
+          name = 'my_runner_adapter',
+          --- Prepare the execution payload
+          ---@param ctx itchy.AdapterContext
+          ---@return itchy.PreparedExecution
+          prepare = function(ctx)
+            return {
+              source = ctx.source,
+              -- cmd = { 'my-runner', '--eval', ctx.source },
+              -- cleanup = function() ... end,
+            }
+          end,
+          --- Decode the execution result into normalized events
+          ---@param ctx itchy.AdapterContext
+          ---@param prepared itchy.PreparedExecution
+          ---@param result itchy.ExecutionResult
+          ---@return itchy.Event[]
+          decode = function(ctx, prepared, result)
+            local event = require('itchy.event')
+            local events = {}
+            if result.stdout then
+              for line in result.stdout:gmatch('[^\r\n]+') do
+                -- Event.line is a 1-based source line, or nil for locationless
+                table.insert(events, event.create('stdout', line, 1))
+              end
+            end
+            if result.stderr and result.stderr ~= '' then
+              table.insert(events, event.create('error', result.stderr, nil))
+            end
+            return events
+          end,
+        },
+      },
+    },
+  },
+}
 ```
 
 </details>
 
 > [!NOTE]
-> The options are also available in Neovim by calling `:h itchy.nvim`
+> Detailed help is available in Neovim via `:h itchy.nvim`
 
-## 🎉 Acknowledgements
+## Acknowledgements
 
-- [`snacks.nvim`](https://github.com/folke/snacks.nvim) for implementing scratch buffers and core functionality for `Lua`
-- [jdrupal-dev](https://github.com/jdrupal-dev) for the idea of [creating a wrapper that injects line numbers](https://github.com/folke/snacks.nvim/issues/203#issuecomment-2541372433)
+- [`snacks.nvim`](https://github.com/folke/snacks.nvim) for scratch buffers and Lua evaluation.
+- [jdrupal-dev](https://github.com/jdrupal-dev) for the original inspiration behind line-aware inline execution output.

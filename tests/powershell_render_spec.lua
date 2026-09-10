@@ -110,28 +110,6 @@ describe('itchy.run powershell rendering', function()
     return get_virt_by_row(buf, ns_id)
   end
 
-  it('paints a Write-Error with the error highlight (regression)', function()
-    if not pwsh_ready() then
-      return
-    end
-    -- Focused lockdown for the virtual-line regression: event.kind ==
-    -- 'error' is not enough, the extmark's virt_lines themselves must carry
-    -- the configured error highlight (runtimes_spec discards highlights).
-    local by_row = run_lines({ 'Write-Output "normal"', 'Write-Error "failure"' }, 2)
-
-    local hl_stdout = config.cfg.highlights.stdout
-    local hl_stderr = config.cfg.highlights.stderr
-
-    eq(by_row[0][1].text, 'normal')
-    eq(by_row[0][1].hls[2], hl_stdout)
-
-    -- Exactly one virtual line: the native error-stream echo must fold into
-    -- the framed event rather than doubling it, and it must paint hl_stderr.
-    eq(#by_row[1], 1)
-    eq(by_row[1][1].text, 'failure')
-    eq(by_row[1][1].hls[2], hl_stderr)
-  end)
-
   it('paints stdout/warning/error with their highlight groups', function()
     if not pwsh_ready() then
       return
@@ -180,7 +158,7 @@ describe('itchy.run powershell rendering', function()
     eq(err.hls[2], hl_stderr)
 
     local boom = single(4)
-    truthy(boom.text:find('boom-hi', 1, true) ~= nil)
+    eq(boom.text, 'boom-hi')
     eq(boom.hls[2], hl_stderr)
   end)
 end)

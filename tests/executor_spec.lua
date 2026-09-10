@@ -80,25 +80,25 @@ end)
 
 describe('itchy.executor.system execution', function()
   it('captures stdout', function()
-    local err, res = run_system({ 'python', '-c', 'print("LINE0: hello")' }, nil)
+    local err, res = run_system({ 'python', '-c', 'print("hello")' }, nil)
     eq(err, nil)
     assert(res ~= nil)
-    truthy(res.stdout:find('LINE0: hello', 1, true) ~= nil)
+    truthy(res.stdout:find('hello', 1, true) ~= nil)
   end)
 
   it('captures stderr', function()
-    local err, res = run_system({ 'python', '-c', 'import sys; sys.stderr.write("LINE1: Error: boom\\n")' }, nil)
+    local err, res = run_system({ 'python', '-c', 'import sys; sys.stderr.write("Error: boom\\n")' }, nil)
     eq(err, nil)
     assert(res ~= nil)
     truthy(res.stderr:find('boom', 1, true) ~= nil)
   end)
 
   it('keeps stdout on non-zero exit', function()
-    local err, res = run_system({ 'python', '-c', 'print("LINE0: out"); raise SystemExit(3)' }, nil)
+    local err, res = run_system({ 'python', '-c', 'print("out"); raise SystemExit(3)' }, nil)
     eq(err, nil)
     assert(res ~= nil)
     eq(res.code, 3)
-    truthy(res.stdout:find('LINE0: out', 1, true) ~= nil)
+    truthy(res.stdout:find('out', 1, true) ~= nil)
   end)
 
   it('reports spawn failure', function()
@@ -126,7 +126,7 @@ describe('itchy.executor.system execution', function()
   end)
 
   it('executes via a temporary source file', function()
-    local path, terr = utils.create_temp_code_file('python', 'print("LINE0: from-tempfile")\n')
+    local path, terr = utils.create_temp_code_file('python', 'print("from-tempfile")\n')
     assert(path ~= nil, tostring(terr))
     local err, res = run_system({ 'python', path }, nil)
     utils.remove_temp_file(path)
@@ -161,14 +161,22 @@ describe('itchy.executor.system execution', function()
       table.insert(recorded, path)
       return path, err
     end
+    local py_cmd = vim.fn.executable('python3') == 1 and 'python3' or 'python'
     runtimes.runtimes['itchytest'] = {
       slowtemp = {
-        cmd = 'python',
+        cmd = py_cmd,
         args = {},
-        offset = 0,
-        wrapper = function(_)
-          return 'import time; time.sleep(30)\n'
-        end,
+        adapter = {
+          name = 'slowtemp',
+          prepare = function(_)
+            return {
+              source = 'import time; time.sleep(30)\n',
+            }
+          end,
+          decode = function(_, _, _)
+            return {}
+          end,
+        },
         temp_file = true,
         env = {},
       },
@@ -291,24 +299,36 @@ describe('itchy buffer-owned execution lifecycle', function()
     runtimes = require 'itchy.runtimes'
 
     itchy._reset_runs()
+    local fake_adapter = {
+      name = 'fake',
+      prepare = function(ctx)
+        return {
+          source = ctx.source,
+        }
+      end,
+      decode = function(ctx, prepared, result)
+        local event = require 'itchy.event'
+        local events = {}
+        if result.stdout then
+          for line in result.stdout:gmatch('[^\r\n]+') do
+            table.insert(events, event.create('stdout', line, 1))
+          end
+        end
+        return events
+      end,
+    }
     runtimes.runtimes['itchytest'] = {
       fake = {
         cmd = 'fake-cmd',
         args = {},
-        offset = 0,
-        wrapper = function(code)
-          return code
-        end,
+        adapter = fake_adapter,
         temp_file = false,
         env = {},
       },
       faketemp = {
         cmd = 'fake-cmd',
         args = {},
-        offset = 0,
-        wrapper = function(code)
-          return code
-        end,
+        adapter = fake_adapter,
         temp_file = true,
         env = {},
       },
@@ -331,7 +351,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     eq(fake.cancel_calls, 1)
 
     -- Complete newest run first.
-    fake.callbacks[2](nil, { code = 0, signal = 0, stdout = 'LINE0: from-B\n', stderr = '' })
+    fake.callbacks[2](nil, { code = 0, signal = 0, stdout = 'from-B\n', stderr = '' })
     local ns = api.nvim_get_namespaces()['itchy_itchytest_result']
     assert(ns ~= nil)
     local ok = vim.wait(2000, function()
@@ -343,7 +363,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     truthy(marks[1]:find('from-B', 1, true) ~= nil)
 
     -- Stale completion from A must not overwrite B.
-    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'LINE0: from-A\n', stderr = '' })
+    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'from-A\n', stderr = '' })
     vim.wait(300, function()
       return false
     end, 50)
@@ -359,7 +379,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     eq(#fake.handles, 1)
     itchy.clear(buf)
     truthy(fake.handles[1]._cancelled)
-    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'LINE0: late\n', stderr = '' })
+    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'late\n', stderr = '' })
     vim.wait(300, function()
       return false
     end, 50)
@@ -375,7 +395,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     local buf = setup_buf('itchytest', { 'code' })
     itchy.run('fake', buf)
     -- Complete the run: schedules render + release via vim.schedule.
-    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'LINE0: late\n', stderr = '' })
+    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'late\n', stderr = '' })
     -- Clear before the scheduled render fires. Must invalidate the
     -- completed-but-pending run so it cannot resurrect extmarks.
     itchy.clear(buf)
@@ -397,7 +417,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     -- Same invalidation path the TextChanged/TextChangedI autocmd uses.
     itchy._invalidate_run(buf, true)
     truthy(fake.handles[1]._cancelled)
-    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'LINE0: stale\n', stderr = '' })
+    fake.callbacks[1](nil, { code = 0, signal = 0, stdout = 'stale\n', stderr = '' })
     vim.wait(300, function()
       return false
     end, 50)
@@ -418,7 +438,7 @@ describe('itchy buffer-owned execution lifecycle', function()
     end, 50)
     eq(itchy._active_runs[buf], nil)
     -- Delayed completion after wipeout must not error or render.
-    local ok = pcall(fake.callbacks[1], nil, { code = 0, signal = 0, stdout = 'LINE0: late\n', stderr = '' })
+    local ok = pcall(fake.callbacks[1], nil, { code = 0, signal = 0, stdout = 'late\n', stderr = '' })
     truthy(ok)
     vim.wait(300, function()
       return false
@@ -489,11 +509,20 @@ describe('itchy buffer-owned execution lifecycle', function()
       table.insert(recorded, path)
       return path, err
     end
-    runtimes.runtimes['itchytest'].faketemp.cmd = 'python'
+    local py_cmd = vim.fn.executable('python3') == 1 and 'python3' or 'python'
+    runtimes.runtimes['itchytest'].faketemp.cmd = py_cmd
     runtimes.runtimes['itchytest'].faketemp.args = {}
-    runtimes.runtimes['itchytest'].faketemp.wrapper = function(code)
-      return 'print("LINE0: temp-ok")\n'
-    end
+    runtimes.runtimes['itchytest'].faketemp.adapter = {
+      name = 'faketemp',
+      prepare = function(ctx)
+        return {
+          source = 'print("temp-ok")\n',
+        }
+      end,
+      decode = function(ctx, prepared, result)
+        return {}
+      end,
+    }
     local buf = setup_buf('itchytest', { 'x = 1' })
     itchy.run('faketemp', buf)
     vim.wait(15000, function()

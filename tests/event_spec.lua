@@ -6,39 +6,25 @@ local truthy = assert.is_true
 local falsy = assert.is_false
 
 describe('itchy.event', function()
-  it('creates a stdout event with a 1-based line', function()
-    local e = event.create('stdout', 'hello', 4)
-    eq(e.kind, 'stdout')
-    eq(e.line, 4)
-    eq(e.message, 'hello')
-  end)
+	it('creates exact normalized event records for every supported kind', function()
+		local cases = {
+			{ kind = 'stdout', message = 'hello', line = 4 },
+			{ kind = 'stderr', message = 'warn stream', line = 5 },
+			{ kind = 'error', message = 'boom', line = 2 },
+			{ kind = 'warning', message = 'careful', line = 1 },
+			{ kind = 'error', message = 'no location', line = nil },
+			{ kind = 'stdout', message = 'hi', line = 3, column = 7 },
+		}
+		for _, wanted in ipairs(cases) do
+			local actual = event.create(wanted.kind, wanted.message, wanted.line, wanted.column)
+			eq(actual.kind, wanted.kind)
+			eq(actual.message, wanted.message)
+			eq(actual.line, wanted.line)
+			eq(actual.column, wanted.column)
+		end
+	end)
 
-  it('creates an error event with a line', function()
-    local e = event.create('error', 'boom', 2)
-    eq(e.kind, 'error')
-    eq(e.line, 2)
-  end)
-
-  it('creates a warning event', function()
-    local e = event.create('warning', 'careful', 1)
-    eq(e.kind, 'warning')
-    eq(e.line, 1)
-  end)
-
-  it('supports locationless events via nil line', function()
-    local e = event.create('error', 'no location', nil)
-    eq(e.line, nil)
-    eq(e.message, 'no location')
-  end)
-
-  it('supports an optional 1-based column', function()
-    local e = event.create('stdout', 'hi', 3, 7)
-    eq(e.column, 7)
-    local no_col = event.create('stdout', 'hi', 3)
-    eq(no_col.column, nil)
-  end)
-
-  it('rejects legacy magic line values', function()
+  it('rejects invalid line values', function()
     assert.has_error(function()
       event.create('error', 'bad', -1)
     end)
