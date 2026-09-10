@@ -7,7 +7,7 @@ Run code from a buffer or visual selection and inspect stdout and stderr as inli
 ## Features
 
 - Evaluate code from an entire buffer or a visual selection
-- Display stdout and stderr inline as virtual text
+- Display stdout and stderr inline as virtual lines
 - Optional [`snacks.nvim`](https://github.com/folke/snacks.nvim) scratch buffer integration
 
 ## Supported languages and runtimes
@@ -74,7 +74,7 @@ Lua API equivalents:
 ---@param buf? integer buffer handle, defaults to current buffer
 require('itchy').run(rt, buf)
 
---- Clear virtual text from a buffer.
+--- Clear virtual lines from a buffer.
 ---@param buf? integer buffer handle
 require('itchy').clear(buf)
 
@@ -220,4 +220,4 @@ opts = {
 ## Acknowledgements
 
 - [`snacks.nvim`](https://github.com/folke/snacks.nvim) for scratch buffers and Lua evaluation.
-- [jdrupal-dev](https://github.com/jdrupal-dev) for the idea of injecting line numbers into test executions.
+- [jdrupal-dev](https://github.com/jdrupal-dev) for the original inspiration behind line-aware inline execution output.
