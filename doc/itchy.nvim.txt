@@ -6,7 +6,7 @@ Table of Contents                               *itchy.nvim-table-of-contents*
 
 1. itchy.nvim                                          |itchy.nvim-itchy.nvim|
   - Features                                  |itchy.nvim-itchy.nvim-features|
-  - Supported languages and runtimes|itchy.nvim-itchy.nvim-supported-languages-and-runtimes|
+  - Supported languages / runtimes|itchy.nvim-itchy.nvim-supported-languages-/-runtimes|
   - Execution                                |itchy.nvim-itchy.nvim-execution|
   - Installation                          |itchy.nvim-itchy.nvim-installation|
   - Usage                                        |itchy.nvim-itchy.nvim-usage|
@@ -28,7 +28,7 @@ FEATURES                                      *itchy.nvim-itchy.nvim-features*
 - Optional `snacks.nvim` <https://github.com/folke/snacks.nvim> scratch buffer integration
 
 
-SUPPORTED LANGUAGES AND RUNTIMES*itchy.nvim-itchy.nvim-supported-languages-and-runtimes*
+SUPPORTED LANGUAGES / RUNTIMES*itchy.nvim-itchy.nvim-supported-languages-/-runtimes*
 
 - Go: `go`
 - JavaScript and TypeScript: `bun`, `deno`, `node`
