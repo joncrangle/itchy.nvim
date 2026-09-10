@@ -8,7 +8,7 @@ local falsy = assert.is_false
 
 local function ctx_for(source, cmd, args, ft)
   return {
-    runtime = { cmd = cmd or 'node', args = args or { '-e' }, offset = 0 },
+    runtime = { cmd = cmd or 'node', args = args or { '-e' } },
     filetype = ft or 'javascript',
     source = source,
     buf = 1,

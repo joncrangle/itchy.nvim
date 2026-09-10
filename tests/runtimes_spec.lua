@@ -15,6 +15,7 @@ local api = vim.api
 ---@field runtimes string[]
 ---@field expected string[]
 ---@field pass_min? integer
+---@field highlight_checks? {text: string, hl: string}[]
 
 ---@type table<string, itchy.TestCase>
 local test_cases = {
@@ -38,6 +39,11 @@ local test_cases = {
       'Async error: Cannot divide by zero',
       'no such file or directory',
     },
+    highlight_checks = {
+      { text = 'Hello from JavaScript', hl = 'Comment' },
+      { text = 'Cannot divide by zero', hl = 'DiagnosticError' },
+      { text = 'Async operation complete', hl = 'Comment' },
+    },
   },
   typescript = {
     runtimes = { 'deno', 'bun', 'node' },
@@ -48,6 +54,11 @@ local test_cases = {
       'Async operation complete',
       'Async error: Cannot divide by zero',
       'no such file or directory',
+    },
+    highlight_checks = {
+      { text = 'Hello from TypeScript', hl = 'Comment' },
+      { text = 'Cannot divide by zero', hl = 'DiagnosticError' },
+      { text = 'Async operation complete', hl = 'Comment' },
     },
   },
   go = {
@@ -60,6 +71,13 @@ local test_cases = {
       'Async operation complete',
       'File error:',
       'divide by zero',
+    },
+    -- Verify stdout (including log.Println) maps to Comment, not DiagnosticError
+    highlight_checks = {
+      { text = 'Hello from Go', hl = 'Comment' },
+      { text = 'This is a log message', hl = 'Comment' },
+      { text = 'File error:', hl = 'Comment' },
+      { text = 'divide by zero', hl = 'DiagnosticError' },
     },
   },
   bash = {
@@ -177,6 +195,35 @@ local function get_extmark_text(buf, namespace)
   return output
 end
 
+--- Get extmark details including text, highlight group, and source row
+---@param buf integer
+---@param namespace integer
+---@return {text: string, hl: string, row: integer}[]
+local function get_extmark_details(buf, namespace)
+  local extmarks = api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
+  local output = {}
+
+  for _, mark in ipairs(extmarks) do
+    local row = mark[2]
+    if mark[4] and mark[4].virt_lines then
+      for _, line in ipairs(mark[4].virt_lines) do
+        local text, hl = '', nil
+        for _, chunk in ipairs(line) do
+          if not chunk[1]:match '^%s*│%s*$' then
+            text = text .. chunk[1]
+            hl = hl or chunk[2]
+          end
+        end
+        if text ~= '' then
+          table.insert(output, { text = text, hl = hl, row = row })
+        end
+      end
+    end
+  end
+
+  return output
+end
+
 for ft, test_case in pairs(test_cases) do
   describe('Itchy run for ' .. ft, function()
     local buf
@@ -254,6 +301,26 @@ for ft, test_case in pairs(test_cases) do
         end
 
         assert(passes >= pass_min, string.format('Expected at least %d matches, but got %d in runtime %s.', pass_min, passes, rt))
+
+        -- Highlight group assertions: verify correct kind -> highlight mapping
+        if test_case.highlight_checks then
+          local details = get_extmark_details(buf, ns_id)
+          for _, check in ipairs(test_case.highlight_checks) do
+            local matched = false
+            for _, d in ipairs(details) do
+              if fuzzy_match(d.text, check.text) then
+                assert(d.hl == check.hl,
+                  string.format('[%s/%s] "%s" expected hl=%s, got hl=%s (row %d)',
+                    ft, rt, check.text, check.hl, d.hl or 'nil', d.row))
+                matched = true
+                break
+              end
+            end
+            if not matched then
+              print(string.format('  [WARN] highlight check: "%s" not found in extmarks for %s/%s', check.text, ft, rt))
+            end
+          end
+        end
       end)
     end
   end)

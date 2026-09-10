@@ -8,7 +8,7 @@ local falsy = assert.is_false
 
 local function ctx_for(source)
   return {
-    runtime = { cmd = 'python', args = { '-c' }, offset = 26 },
+    runtime = { cmd = 'python', args = { '-c' } },
     filetype = 'python',
     source = source,
     buf = 1,
@@ -55,7 +55,7 @@ describe('itchy.adapters.python', function()
 
   it('prepare() drops -c but keeps the uv launcher prefix', function()
     local ctx = {
-      runtime = { cmd = 'uv', args = { 'run', 'python', '-c' }, offset = 26 },
+      runtime = { cmd = 'uv', args = { 'run', 'python', '-c' } },
       filetype = 'python',
       source = 'print(1)\n',
       buf = 1,
@@ -197,7 +197,7 @@ describe('itchy.adapters.python', function()
     f:write('VALUE = "sibling-ok"\n')
     f:close()
     local ctx = {
-      runtime = { cmd = cmd, args = { '-c' }, offset = 26 },
+      runtime = { cmd = cmd, args = { '-c' } },
       filetype = 'python',
       source = 'import helper\nprint(helper.VALUE)\n',
       buf = 1,
@@ -224,7 +224,7 @@ describe('itchy.adapters.python', function()
     end
     local cmd = vim.fn.executable('python') == 1 and 'python' or 'python3'
     local ctx = {
-      runtime = { cmd = cmd, args = { '-c' }, offset = 26 },
+      runtime = { cmd = cmd, args = { '-c' } },
       filetype = 'python',
       source = 'print("hello", end="!")\nprint("plain")\n',
       buf = 1,
@@ -252,7 +252,7 @@ describe('itchy.adapters.python', function()
     -- Visual selections pad omitted leading lines with newlines; native
     -- frame locations must then equal original buffer lines (offset of 2).
     local ctx = {
-      runtime = { cmd = cmd, args = { '-c' }, offset = 26 },
+      runtime = { cmd = cmd, args = { '-c' } },
       filetype = 'python',
       source = '\n\nprint("sel")\n',
       buf = 1,

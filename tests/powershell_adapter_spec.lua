@@ -11,7 +11,6 @@ local function ctx_for(source, cmd)
     runtime = {
       cmd = cmd or 'pwsh',
       args = { '-NoLogo', '-NoProfile', '-NonInteractive', '-Command' },
-      offset = 0,
     },
     filetype = 'ps1',
     source = source,

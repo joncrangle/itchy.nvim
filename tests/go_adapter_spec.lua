@@ -8,7 +8,7 @@ local falsy = assert.is_false
 
 local function ctx_for(source)
   return {
-    runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+    runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
     filetype = 'go',
     source = source,
     buf = 1,
@@ -227,7 +227,7 @@ describe('itchy.adapters.go', function()
       '',
     }, '\n')
     local ctx = {
-      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
       filetype = 'go',
       source = src,
       buf = 1,
@@ -376,7 +376,7 @@ describe('itchy.adapters.go', function()
       '',
     }, '\n')
     local ctx = {
-      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
       filetype = 'go',
       source = src,
       buf = 1,
@@ -420,7 +420,7 @@ describe('itchy.adapters.go', function()
       '',
     }, '\n')
     local ctx = {
-      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
       filetype = 'go',
       source = src,
       buf = 1,
@@ -447,7 +447,7 @@ describe('itchy.adapters.go', function()
     -- Visual selection of buffer line 3: leading lines padded with newlines
     -- so the fragment's source line equals the original buffer line.
     local ctx = {
-      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
       filetype = 'go',
       source = '\n\nfmt.Println("sel")\n',
       buf = 1,
@@ -521,7 +521,7 @@ describe('itchy.adapters.go', function()
     end
     local src = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n'
     local ctx = {
-      runtime = { cmd = 'go', args = { 'run' }, offset = 0, env = { GO111MODULE = 'off' } },
+      runtime = { cmd = 'go', args = { 'run' }, env = { GO111MODULE = 'off' } },
       filetype = 'go',
       source = src,
       buf = 1,
