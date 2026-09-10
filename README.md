@@ -1,16 +1,16 @@
-# itchy.nvim
+# 🪰 `itchy.nvim`
 
 Run code from a buffer or visual selection and inspect stdout and stderr as inline virtual lines.
 
 ![Demo](./assets/demo.gif)
 
-## Features
+## ✨ Features
 
 - Evaluate code from an entire buffer or a visual selection
 - Display stdout and stderr inline as virtual lines
 - Optional [`snacks.nvim`](https://github.com/folke/snacks.nvim) scratch buffer integration
 
-## Supported languages and runtimes
+## 💻 Supported languages / runtimes
 
 - Go: `go`
 - JavaScript and TypeScript: `bun`, `deno`, `node`
@@ -20,7 +20,7 @@ Run code from a buffer or visual selection and inspect stdout and stderr as inli
 
 When nvim-treesitter includes the `go` parser, `itchy.nvim` parses Go syntax trees to target output calls precisely. Strings, comments, and unrelated methods with matching names are ignored. When the parser is missing, an internal scanner performs comment- and string-aware matching instead.
 
-## Execution
+## ⚡ Execution
 
 Subprocesses run through `vim.system()` using argument arrays instead of shell command strings. Arguments with spaces or shell characters pass directly to the process. Environment overrides like Go's `GO111MODULE` apply only to the spawned child process and do not modify Neovim's environment.
 
@@ -28,7 +28,7 @@ Neovim 0.11 and 0.12 use callback-based `vim.system()` jobs. Neovim 0.13 and new
 
 Each buffer tracks at most one active job. Starting a new run cancels the previous job. Editing, clearing, or deleting the buffer cancels active jobs so outdated results never overwrite current buffer contents.
 
-## Installation
+## 📦 Installation
 
 Using [folke/lazy.nvim](https://github.com/folke/lazy.nvim):
 
@@ -46,7 +46,7 @@ Using [folke/lazy.nvim](https://github.com/folke/lazy.nvim):
 }
 ```
 
-## Usage
+## 🚀 Usage
 
 In any buffer with a supported filetype, run `:Itchy run`.
 
@@ -93,7 +93,7 @@ require('itchy').current(buf)
 require('itchy').get_runtimes()
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 <details>
 <summary>Default options</summary>
@@ -217,7 +217,7 @@ opts = {
 > [!NOTE]
 > Detailed help is available in Neovim via `:h itchy.nvim`
 
-## Acknowledgements
+## 🎉 Acknowledgements
 
 - [`snacks.nvim`](https://github.com/folke/snacks.nvim) for scratch buffers and Lua evaluation.
 - [jdrupal-dev](https://github.com/jdrupal-dev) for the original inspiration behind line-aware inline execution output.
