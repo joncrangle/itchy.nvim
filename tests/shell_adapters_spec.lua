@@ -170,6 +170,20 @@ describe('itchy shell adapters', function()
            eq(events[1].message, shell.name == 'zsh' and 'command not found: missing-command'
              or shell.name == 'bash' and 'missing-command: command not found'
              or 'missing-command: command not found')
+			if shell.name == 'sh' then
+				local arithmetic = shell.adapter.decode(ctx_for(shell, ''), prepared, {
+					code = 1,
+					signal = 0,
+					stdout = '',
+					stderr = prepared.metadata.user_file
+						.. ': '
+						.. tostring(prepared.metadata.line_offset + 7)
+						.. ': arithmetic expression: division by zero: " 1 / 0 "\n',
+				})
+				eq(#arithmetic, 1)
+				eq(arithmetic[1].line, 7)
+				eq(arithmetic[1].message, 'arithmetic expression: division by zero: "1 / 0"')
+			end
         end)
       end)
 

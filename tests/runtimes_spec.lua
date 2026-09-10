@@ -153,7 +153,7 @@ local function expected_for(ft, expected)
   local adjusted = vim.deepcopy(expected)
   adjusted[3].text = shell_kind == 'bash'
     and '1 / 0: division by 0'
-    or 'arithmetic expression: division by zero: " 1 / 0 "'
+    or 'arithmetic expression: division by zero: "1 / 0"'
   return adjusted
 end
 

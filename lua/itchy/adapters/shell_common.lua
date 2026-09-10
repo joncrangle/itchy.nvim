@@ -33,6 +33,10 @@ local function normalize_native_message(ctx, message)
 		if command ~= nil then
 			message = command .. ": command not found"
 		end
+		local _, expression = message:match('^(arithmetic expression: division by zero: ")%s*(.-)%s*"$')
+		if expression ~= nil then
+			message = 'arithmetic expression: division by zero: "' .. expression .. '"'
+		end
 	end
 	-- Bash versions that include an arithmetic expansion token append this
 	-- explanatory suffix. It is part of the shell's diagnostic envelope,
