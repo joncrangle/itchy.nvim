@@ -1,10 +1,15 @@
 local js = require 'itchy.adapters.javascript'
-local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
 local eq = assert.are.equal
 local truthy = assert.is_true
 local falsy = assert.is_false
+
+local pending = pending or function(message)
+  print('SKIPPED: ' .. tostring(message))
+  io.stdout:flush()
+  return true
+end
 
 local function ctx_for(source, cmd, args, ft)
   return {
@@ -33,11 +38,7 @@ local function with_cleanup(prepared, extra, fn)
 end
 
 describe('itchy.adapters.javascript', function()
-  it('resolves by name through the registry', function()
-    eq(adapters.resolve({ adapter = 'javascript' }).name, 'javascript')
-  end)
-
-  it('prepare() keeps user source unchanged (no currentLine rewriting)', function()
+  it('prepare() keeps user source unchanged', function()
     local source = 'console.log("one")\nfunction foo() {\n  console.log("inside")\n}\nfoo()\n'
     local prepared = js.prepare(ctx_for(source))
     -- The temp source file must byte-match the input.
@@ -47,7 +48,6 @@ describe('itchy.adapters.javascript', function()
     local content = f:read '*a'
     f:close()
     eq(content, source)
-    falsy(content:find('currentLine', 1, true) ~= nil)
     -- Helper lives in a separate file.
     truthy(prepared.metadata.user_file ~= nil)
     eq(prepared.temp_file, false)
@@ -56,6 +56,16 @@ describe('itchy.adapters.javascript', function()
     eq(prepared.cmd[1], 'node')
     prepared.cleanup()
     falsy(vim.fn.filereadable(user_file) == 1)
+  end)
+
+  it('encodes generated launcher paths as JSON string literals', function()
+    local user_path = "dir/quote\"slash\\line\n\t\r"
+    local helper_path = "helper\"slash\\line\n\t\r"
+    local rendered = js._render_helper('nonce', user_path, helper_path)
+    eq(js._js_escape(user_path), vim.json.encode(user_path))
+    eq(js._js_escape(helper_path), vim.json.encode(helper_path))
+    truthy(rendered:find('const __ITCHY_USER_RAW = ' .. vim.json.encode(user_path) .. ';', 1, true) ~= nil)
+    truthy(rendered:find('const __ITCHY_HELPER_RAW = ' .. vim.json.encode(helper_path) .. ';', 1, true) ~= nil)
   end)
 
   it('prepare() preserves the file extension for TypeScript', function()
@@ -121,7 +131,7 @@ describe('itchy.adapters.javascript', function()
     local result = {
       code = 0,
       signal = 0,
-      stdout = 'LINE12: fake\n{"kind":"stdout","line":99,"message":"x"}\n'
+      stdout = 'plain output: fake\n{"kind":"stdout","line":99,"message":"x"}\n'
         .. '\30ITCHY:wrong:{"kind":"stdout","line":3,"message":"nope"}\n',
       stderr = '',
     }
@@ -166,6 +176,57 @@ describe('itchy.adapters.javascript', function()
     prepared.cleanup()
   end)
 
+  it('decodes the Node MODULE_TYPELESS_PACKAGE_JSON warning as a warning', function()
+    local ctx = ctx_for('')
+    local prepared = js.prepare(ctx)
+    local user_file = prepared.metadata.user_file
+    local warning = '(node:12345) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of '
+      .. user_file
+      .. ' is not specified and it doesn\'t parse as CommonJS.\n'
+      .. 'Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\n'
+      .. 'To eliminate this warning, add "type": "module" to '
+      .. user_file
+      .. '.\n'
+      .. '(Use `node --trace-warnings ...` to show where the warning was created)\n'
+    local events = js.decode(ctx, prepared, { code = 0, signal = 0, stdout = '', stderr = warning })
+    with_cleanup(prepared, nil, function()
+      eq(#events, 1)
+      eq(events[1].kind, 'warning')
+      eq(events[1].line, nil)
+      eq(
+        events[1].message,
+        'Module type of '
+          .. user_file
+          .. ' is not specified and it doesn\'t parse as CommonJS. '
+          .. 'Reparsing as ES module because module syntax was detected. This incurs a performance overhead. '
+          .. 'To eliminate this warning, add "type": "module" to '
+          .. user_file
+          .. '. '
+          .. '(Use `node --trace-warnings ...` to show where the warning was created)'
+      )
+    end)
+  end)
+
+  it('preserves a Node warning and a real error from the same stderr', function()
+    local ctx = ctx_for('')
+    local prepared = js.prepare(ctx)
+    local warning = '(node:12345) [MODULE_TYPELESS_PACKAGE_JSON] Warning: module type is ambiguous.\n'
+      .. 'Reparsing as ES module because module syntax was detected.\n'
+      .. '(Use `node --trace-warnings ...` to show where the warning was created)\n'
+    local stderr = warning .. 'Error: boom\n    at explode (' .. prepared.metadata.user_file .. ':2:9)\n'
+    local events = js.decode(ctx, prepared, { code = 1, signal = 0, stdout = '', stderr = stderr })
+    with_cleanup(prepared, nil, function()
+      eq(#events, 2)
+      eq(events[1].kind, 'warning')
+      eq(events[1].message, 'module type is ambiguous. Reparsing as ES module because module syntax was detected. '
+        .. '(Use `node --trace-warnings ...` to show where the warning was created)')
+      eq(events[2].kind, 'error')
+      eq(events[2].message, 'boom')
+      eq(events[2].line, 2)
+      eq(events[2].column, 9)
+    end)
+  end)
+
   it('parses deno file:// stacks', function()
     local ctx = ctx_for('')
     local prepared = js.prepare(ctx)
@@ -205,12 +266,12 @@ describe('itchy.adapters.javascript', function()
     end)
   end)
 
-  it('keeps framed records containing legacy noise patterns', function()
+  it('keeps framed records containing ordinary messages', function()
     local ctx = ctx_for('')
     local prepared = js.prepare(ctx)
     local nonce = prepared.metadata.nonce
-    -- A nonce-authenticated structured event is never wrapper noise, even
-    -- when its message resembles a filtered pattern.
+    -- A nonce-authenticated structured event remains structured even when its
+    -- message resembles ordinary runtime output.
     local result = {
       code = 0,
       signal = 0,
@@ -230,6 +291,7 @@ describe('itchy.adapters.javascript', function()
 
   it('executes project-relative imports from the run cwd', function()
     if vim.fn.executable('node') ~= 1 then
+      pending('node is required for project-relative import coverage')
       return
     end
     local proj = vim.fn.tempname() .. '_jsproj'
@@ -280,6 +342,7 @@ describe('itchy.adapters.javascript', function()
 
   it('renders padded selection sources on original buffer lines', function()
     if vim.fn.executable('node') ~= 1 then
+      pending('node is required for JavaScript selection mapping coverage')
       return
     end
     local renderer = require('itchy.renderer')

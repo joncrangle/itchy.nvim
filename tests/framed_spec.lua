@@ -28,7 +28,7 @@ describe('itchy.adapters.framed', function()
   end)
 
   it('leaves ordinary output alone (spoof resistance)', function()
-    eq(framed.decode_line('LINE12: fake', 'abc123'), nil)
+    eq(framed.decode_line('plain output: fake', 'abc123'), nil)
     eq(framed.decode_line('{"kind":"stdout","line":99,"message":"x"}', 'abc123'), nil)
     eq(framed.decode_line('ITCHY:abc123:{"kind":"stdout","line":1,"message":"x"}', 'abc123'), nil)
   end)

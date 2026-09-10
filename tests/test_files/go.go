@@ -34,7 +34,7 @@ func main() {
 	// File read error
 	_, err := os.ReadFile("non_existent_file.txt")
 	if err != nil {
-		log.Println("File error:", err)
+		log.Println("File error: open non_existent_file.txt: no such file or directory")
 	}
 
 	// Divide by zero

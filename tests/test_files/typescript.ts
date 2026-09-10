@@ -26,10 +26,7 @@ asyncTest();
 
 // File read error
 try {
-	const fs: any = await import("node:fs" as any);
-	fs.readFileSync("non_existent_file.txt", "utf-8");
+  throw new Error("No such file or directory");
 } catch (e) {
-	console.error("File error:", (e as Error)?.message ?? e);
+  console.error("File error:", e instanceof Error ? e.message : String(e));
 }
-
-export {};

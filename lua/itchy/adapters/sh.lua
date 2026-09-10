@@ -18,13 +18,86 @@ local SH_HEADER = [=[
 # POSIX sh only: portable constructs (no arrays, no BASH_*, no `local`).
 __ITCHY_NONCE="__ITCHY_NONCE__"
 __ITCHY_EVENT_FILE="__ITCHY_EVENT_FILE__"
+__itchy_output_seq=0
+__itchy_frame_active=0
+__itchy_newline=$(printf '\012x')
+__itchy_newline=${__itchy_newline%x}
+
+__itchy_begin_output() {
+  if [ "$__itchy_frame_active" -eq 1 ]; then
+    return
+  fi
+  while :; do
+    __itchy_output_seq=$((__itchy_output_seq + 1))
+    __itchy_output_marker="$__ITCHY_EVENT_FILE.marker.$__itchy_output_seq"
+    if command mkdir "$__itchy_output_marker" 2>/dev/null; then
+      break
+    fi
+  done
+  printf '\036\037%s:%s:' "$__ITCHY_NONCE" "$__itchy_output_seq"
+  __itchy_frame_active=1
+}
+
+__itchy_end_output() {
+  if [ "$__itchy_frame_active" -ne 1 ]; then
+    return
+  fi
+  printf '\036\035%s:%s\n' "$__ITCHY_NONCE" "$__itchy_output_seq"
+  command rmdir "$__itchy_output_marker" 2>/dev/null || true
+  __itchy_frame_active=0
+}
+
+__itchy_should_frame() {
+  # A function-level redirection replaces fd 1 before the helper runs. Do not
+  # write transport bytes into a user-owned regular file; the side-channel
+  # record still preserves the mapped output event.
+  if [ -f /dev/fd/1 ]; then
+    return 1
+  fi
+  return 0
+}
 
 __itchy_emit() {
   __itchy_kind="$1"
   __itchy_line="$2"
   __itchy_msg="$3"
-  __itchy_flat=$(printf '%s' "$__itchy_msg" | tr '\n\t\r' '   ')
-  __itchy_esc=$(printf '%s' "$__itchy_flat" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  __itchy_esc=$(printf '%s' "$__itchy_msg" | awk '
+BEGIN {
+  __itchy_controls = ""
+  for (__itchy_i = 1; __itchy_i < 32; __itchy_i++) {
+    __itchy_controls = __itchy_controls sprintf("%c", __itchy_i)
+  }
+}
+{
+  if (__itchy_seen) {
+    printf "%s", "\\n"
+  }
+  __itchy_seen = 1
+  for (__itchy_i = 1; __itchy_i <= length($0); __itchy_i++) {
+    __itchy_c = substr($0, __itchy_i, 1)
+    if (__itchy_c == "\\") {
+      printf "%s", "\\\\"
+    } else if (__itchy_c == "\"") {
+      printf "%s", "\\\""
+    } else {
+      __itchy_code = index(__itchy_controls, __itchy_c)
+      if (__itchy_code == 8) {
+        printf "%s", "\\b"
+      } else if (__itchy_code == 9) {
+        printf "%s", "\\t"
+      } else if (__itchy_code == 12) {
+        printf "%s", "\\f"
+      } else if (__itchy_code == 13) {
+        printf "%s", "\\r"
+      } else if (__itchy_code != 0) {
+        printf "%s%02x", "\\u00", __itchy_code
+      } else {
+        printf "%s", __itchy_c
+      }
+    }
+  }
+}
+')
   if [ -n "$__itchy_line" ]; then
     __itchy_json="{\"kind\":\"$__itchy_kind\",\"line\":$__itchy_line,\"message\":\"$__itchy_esc\"}"
   else
@@ -36,9 +109,32 @@ __itchy_emit() {
 __itchy_echo() {
   __itchy_line="$1"
   shift || true
-  __itchy_out=$(echo "$@" 2>/dev/null) || true
-  if [ -n "$__itchy_out" ]; then
+  __itchy_out=$( (echo "$@"; __itchy_status=$?; printf '\001'; exit "$__itchy_status") 2>/dev/null)
+  __itchy_status=$?
+  __itchy_out=${__itchy_out%?}
+  __itchy_had_newline=0
+  case "$__itchy_out" in
+    *"$__itchy_newline")
+      __itchy_had_newline=1
+      while :; do
+        case "$__itchy_out" in
+          *"$__itchy_newline") __itchy_out=${__itchy_out%"$__itchy_newline"} ;;
+          *) break ;;
+        esac
+      done
+      ;;
+  esac
+  if [ "$__itchy_status" -eq 0 ] && [ -n "$__itchy_out" ]; then
     __itchy_emit stdout "$__itchy_line" "$__itchy_out" || true
+    if __itchy_should_frame; then
+      __itchy_begin_output
+      echo "$@"
+      __itchy_output_status=$?
+      if [ "$__itchy_had_newline" -eq 1 ]; then
+        __itchy_end_output
+      fi
+      return $__itchy_output_status
+    fi
   fi
   echo "$@"
 }
@@ -46,12 +142,37 @@ __itchy_echo() {
 __itchy_printf() {
   __itchy_line="$1"
   shift || true
-  __itchy_out=$(printf "$@" 2>/dev/null) || true
-  if [ -n "$__itchy_out" ]; then
+  __itchy_out=$( (printf "$@"; __itchy_status=$?; printf '\001'; exit "$__itchy_status") 2>/dev/null)
+  __itchy_status=$?
+  __itchy_out=${__itchy_out%?}
+  __itchy_had_newline=0
+  case "$__itchy_out" in
+    *"$__itchy_newline")
+      __itchy_had_newline=1
+      while :; do
+        case "$__itchy_out" in
+          *"$__itchy_newline") __itchy_out=${__itchy_out%"$__itchy_newline"} ;;
+          *) break ;;
+        esac
+      done
+      ;;
+  esac
+  if [ "$__itchy_status" -eq 0 ] && [ -n "$__itchy_out" ]; then
     __itchy_emit stdout "$__itchy_line" "$__itchy_out" || true
+    if __itchy_should_frame; then
+      __itchy_begin_output
+      printf "$@"
+      __itchy_output_status=$?
+      if [ "$__itchy_had_newline" -eq 1 ]; then
+        __itchy_end_output
+      fi
+      return $__itchy_output_status
+    fi
   fi
   printf "$@"
 }
+
+trap '__itchy_exit_status=$?; __itchy_end_output; trap - 0; exit "$__itchy_exit_status"' 0
 ]=]
 
 --- Render the header for one run. Exposed for tests.
@@ -141,6 +262,18 @@ end
 ---@param lnum integer
 ---@return string?
 local function rewrite_line(line, lnum)
+	-- A simple command may be the only command inside a parenthesized
+	-- subshell. Preserve the delimiters while rewriting the command so nested
+	-- shell output keeps its source location instead of becoming residual
+	-- locationless stdout.
+	local open, inner, close = line:match("^(%s*%(%s*)(.-)(%s*%)%s*)$")
+	if inner ~= nil then
+		local rewritten_inner = rewrite_line(inner, lnum)
+		if rewritten_inner ~= nil then
+			return open .. rewritten_inner .. close
+		end
+	end
+
 	local indent, word, after = line:match("^(%s*)([%a_][%w_]*)(.*)$")
 	if word == nil then
 		return nil
@@ -215,7 +348,10 @@ function M.prepare(ctx)
 	assert(ctx.runtime ~= nil, "sh adapter requires ctx.runtime")
 	local runtime = ctx.runtime
 	local source = ctx.source or ""
-	local nonce = framed.create_nonce()
+	-- The transport marker travels through user pipelines. Keep its nonce in
+	-- the stable uppercase alphabet so transforms such as `tr a-z A-Z` cannot
+	-- invalidate the marker before the decoder sees it.
+	local nonce = framed.create_nonce():upper()
 
 	local tmpdir, user_path, _, event_path = shell_common.allocate_tmp(ctx, "itchy-sh", nonce, ".sh")
 
@@ -227,7 +363,11 @@ function M.prepare(ctx)
 	if not ok then
 		error("sh adapter: failed to create source file: " .. tostring(werr))
 	end
-	shell_common.write_file(event_path, "")
+	local eok, eerr = shell_common.write_file(event_path, "")
+	if not eok then
+		shell_common.make_cleanup(tmpdir, { user_path, event_path })()
+		error("sh adapter: failed to create event file: " .. tostring(eerr))
+	end
 
 	local cmd = shell_common.build_cmd(runtime, user_path)
 
@@ -253,7 +393,24 @@ end
 ---@param result itchy.ExecutionResult
 ---@return itchy.Event[]
 function M.decode(ctx, prepared, result)
-	return shell_common.decode_sidechannel(ctx, prepared, result)
+	local metadata = (prepared and prepared.metadata) or {}
+	local line_offset = metadata.line_offset or 0
+	local function map_native_line(line, origin)
+		-- A shell function diagnostic is already relative to the user's
+		-- function definition, unlike a diagnostic emitted by the generated
+		-- header/source file. The shared parser marks only arithmetic
+		-- diagnostics with a verified source function origin.
+		if type(origin) == "table" and origin.kind == "function" and type(origin.start_line) == "number" then
+			return origin.start_line + line
+		end
+		local source_line = line - line_offset
+		if source_line >= 1 then
+			return source_line
+		end
+		-- A diagnostic inside the adapter's own header is not user source.
+		return nil
+	end
+	return shell_common.decode_sidechannel(ctx, prepared, result, map_native_line)
 end
 
 return M

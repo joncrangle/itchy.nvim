@@ -16,10 +16,6 @@
 
 local M = {}
 
---- Event.line is 1-based source line. Conversion to Neovim 0-based extmark
---- rows is handled by itchy.renderer.
-M.LINE_BASE = 1
-
 ---@param line any
 ---@return boolean
 local function is_valid_line(line)

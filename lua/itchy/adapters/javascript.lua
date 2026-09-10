@@ -9,11 +9,13 @@ local utils = require("itchy.utils")
 
 M.name = "javascript"
 
---- Escape a path for embedding in a single-quoted JS string literal.
+--- Encode a path as a JSON string literal for embedding in generated JS.
+--- JSON encoding handles quotes, backslashes, and control characters without
+--- allowing filesystem data to terminate or alter the surrounding literal.
 ---@param path string
 ---@return string
 local function js_escape(path)
-	return (path:gsub("\\", "\\\\"):gsub("'", "\\'"))
+	return vim.json.encode(path)
 end
 
 --- Normalize a stack path for comparison (slashes + file:// variants).
@@ -48,9 +50,9 @@ local ESM_HELPER = [[
 import { format as __itchy_fmt } from "node:util";
 import __itchy_path from "node:path";
 import { pathToFileURL } from "node:url";
-const __ITCHY_NONCE = "__ITCHY_NONCE__";
-const __ITCHY_USER_RAW = "__ITCHY_USER_FILE__";
-const __ITCHY_HELPER_RAW = "__ITCHY_HELPER_FILE__";
+const __ITCHY_NONCE = __ITCHY_NONCE__;
+const __ITCHY_USER_RAW = __ITCHY_USER_FILE__;
+const __ITCHY_HELPER_RAW = __ITCHY_HELPER_FILE__;
 const __itchy_USER_ABS = __itchy_path.resolve(__ITCHY_USER_RAW);
 const __itchy_USER_URL = pathToFileURL(__itchy_USER_ABS).href;
 const __itchy_HELPER_URL = pathToFileURL(__itchy_path.resolve(__ITCHY_HELPER_RAW)).href;
@@ -215,6 +217,28 @@ try {
 }
 ]]
 
+--- Render the helper with all interpolated strings encoded as JS literals.
+---@param nonce string
+---@param user_path string
+---@param helper_path string
+---@return string
+local function render_helper(nonce, user_path, helper_path)
+	local helper_src = ESM_HELPER
+	helper_src = helper_src:gsub("__ITCHY_NONCE__", function()
+		return js_escape(nonce)
+	end)
+	helper_src = helper_src:gsub("__ITCHY_USER_FILE__", function()
+		return js_escape(user_path)
+	end)
+	helper_src = helper_src:gsub("__ITCHY_HELPER_FILE__", function()
+		return js_escape(helper_path)
+	end)
+	return helper_src
+end
+
+M._js_escape = js_escape
+M._render_helper = render_helper
+
 --- Prepare execution: unchanged user source + separate helper launcher.
 ---@param ctx itchy.AdapterContext
 ---@return itchy.PreparedExecution
@@ -232,18 +256,9 @@ function M.prepare(ctx)
 
 	local is_deno = runtime.cmd == "deno"
 	-- Reserve the helper path first so it can be embedded for frame
-	-- filtering. Function-form gsub avoids `%` handling in paths.
+	-- filtering. All paths are encoded by render_helper as JSON literals.
 	local helper_path = vim.fn.tempname() .. ".mjs"
-	local helper_src = ESM_HELPER
-	helper_src = helper_src:gsub("__ITCHY_NONCE__", function()
-		return nonce
-	end)
-	helper_src = helper_src:gsub("__ITCHY_USER_FILE__", function()
-		return js_escape(user_path)
-	end)
-	helper_src = helper_src:gsub("__ITCHY_HELPER_FILE__", function()
-		return js_escape(helper_path)
-	end)
+	local helper_src = render_helper(nonce, user_path, helper_path)
 	local helper_file, herr = io.open(helper_path, "w")
 	if not helper_file then
 		utils.remove_temp_file(user_path)
@@ -345,6 +360,105 @@ local function extract_message(stderr_text)
 	return message
 end
 
+--- Match a native Node warning header without treating arbitrary stderr text as
+--- a warning. The bracketed form is used by warnings such as
+--- MODULE_TYPELESS_PACKAGE_JSON; the second form covers Node's named warning
+--- classes such as ExperimentalWarning.
+---@param line string
+---@return string?, string? warning code, first message line
+local function parse_node_warning_header(line)
+	local code, message = line:match("^%(node:%d+%)%s+%[([%w_%-]+)%]%s+Warning:%s*(.*)$")
+	if code then
+		return code, message
+	end
+	return line:match("^%(node:%d+%)%s+([%a][%w_%-]*Warning):%s*(.*)$")
+end
+
+--- Whether a line starts a real runtime/compiler diagnostic. This is kept
+--- deliberately narrow so a warning body cannot be mistaken for an error,
+--- while native Error/SyntaxError and common lower-case runtime diagnostics
+--- still terminate the warning envelope.
+---@param line string
+---@return boolean
+local function starts_diagnostic(line)
+	return line:match("^%s*[A-Za-z][A-Za-z0-9_]*Error%s*[:%[]") ~= nil
+		or line:match("^%s*error%s*:") ~= nil
+		or line:match("^%s*error%s+[A-Za-z][A-Za-z0-9_%-]*%s*:") ~= nil
+		or line:match("^%s*[A-Za-z][A-Za-z0-9_%-]*%s+[Ee]rror%s*:") ~= nil
+		or line:match("^%s*[A-Z][A-Z0-9_]+%d+%s*:") ~= nil
+		or line:match("^%s*fatal%s*:") ~= nil
+		or line:match("^%s*runtime%s+error%s*:") ~= nil
+		or line:match("^%s*[Uu]ncaught%s+") ~= nil
+		or line:match("^%s*[^%s]+:%d+") ~= nil
+end
+
+---@param line string
+---@return boolean
+local function is_warning_trace(line)
+	return line:match("^%(Use `node %-%-trace%-warnings") ~= nil
+end
+
+--- Find native Node warning envelopes and return their messages together with
+--- the stderr line ranges they occupy. The range tracking matters when a
+--- warning and a real error share stderr: the warning must not become the
+--- error fallback message, and neither diagnostic may be discarded.
+---@param stderr_text string
+---@return table[] warnings
+---@return table[] lines remaining lines with their original indexes
+local function parse_node_warnings(stderr_text)
+	local lines = {}
+	framed.each_line(stderr_text, function(line)
+		table.insert(lines, line)
+	end)
+
+	local warnings = {}
+	local consumed = {}
+	local index = 1
+	while index <= #lines do
+		local code, first_line = parse_node_warning_header(lines[index])
+		if not code then
+			index = index + 1
+		else
+			local parts = {}
+			if first_line ~= "" then
+				table.insert(parts, first_line)
+			end
+			local finish = index
+			local next_index = index + 1
+			while next_index <= #lines do
+				if parse_node_warning_header(lines[next_index]) or starts_diagnostic(lines[next_index]) then
+					break
+				end
+				table.insert(parts, lines[next_index])
+				finish = next_index
+				if is_warning_trace(lines[next_index]) then
+					next_index = next_index + 1
+					break
+				end
+				next_index = next_index + 1
+			end
+			for consumed_index = index, finish do
+				consumed[consumed_index] = true
+			end
+			if #parts > 0 then
+				table.insert(warnings, {
+					index = index,
+					message = framed.sanitize_message(table.concat(parts, "\n")),
+				})
+			end
+			index = next_index
+		end
+	end
+
+	local remaining = {}
+	for line_index, line in ipairs(lines) do
+		if not consumed[line_index] then
+			table.insert(remaining, { index = line_index, line = line })
+		end
+	end
+	return warnings, remaining
+end
+
 --- Decode an executor result into normalized events.
 ---@param ctx itchy.AdapterContext
 ---@param prepared itchy.PreparedExecution
@@ -370,22 +484,50 @@ function M.decode(ctx, prepared, result)
 	end)
 
 	local stderr_text = type(result.stderr) == "string" and result.stderr or ""
-	local has_stderr = false
-	framed.each_line(stderr_text, function(line)
-		if line ~= "" then
-			has_stderr = true
-		end
+	local warnings, remaining_stderr = parse_node_warnings(stderr_text)
+	local remaining_lines = {}
+	for _, remaining in ipairs(remaining_stderr) do
+		table.insert(remaining_lines, remaining.line)
+	end
+	local remaining_text = table.concat(remaining_lines, "\n")
+	local error_message = extract_message(remaining_text)
+	local has_error = #remaining_stderr > 0 and error_message ~= nil and error_message ~= ""
+	local error_line, error_column = nil, nil
+	if has_error then
+		-- Locations are searched in the complete native stderr so syntax
+		-- preambles and stack frames retain their existing handling.
+		error_line, error_column = find_user_frame(stderr_text, user_file or "")
+	end
+
+	-- Keep diagnostics in their stderr order. In particular, a warning must
+	-- not replace a later Error: line, and an error appearing before a warning
+	-- must not be reordered as a side effect of classification.
+	local diagnostics = {}
+	for _, warning in ipairs(warnings) do
+		table.insert(diagnostics, {
+			index = warning.index,
+			kind = "warning",
+			message = warning.message,
+		})
+	end
+	if has_error then
+		-- The first remaining line is the start of the native diagnostic after
+		-- warning spans have been removed, and retains its original stderr
+		-- position for stable ordering with warning events.
+		local error_index = remaining_stderr[1].index
+		table.insert(diagnostics, {
+			index = error_index,
+			kind = "error",
+			message = framed.sanitize_message(error_message),
+			line = error_line,
+			column = error_column,
+		})
+	end
+	table.sort(diagnostics, function(left, right)
+		return left.index < right.index
 	end)
-	if has_stderr then
-		local eline, ecol = find_user_frame(stderr_text, user_file or "")
-		local message = extract_message(stderr_text)
-		if message and message ~= "" then
-			if eline then
-				table.insert(events, event.create("error", framed.sanitize_message(message), eline, ecol))
-			else
-				table.insert(events, event.create("error", framed.sanitize_message(message), nil))
-			end
-		end
+	for _, diagnostic in ipairs(diagnostics) do
+		table.insert(events, event.create(diagnostic.kind, diagnostic.message, diagnostic.line, diagnostic.column))
 	end
 
 	return events

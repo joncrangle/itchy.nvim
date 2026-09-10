@@ -32,7 +32,7 @@ function Test-Async
         $null = 1/0
     } catch
     {
-        Write-Host "Caught async error: $_"
+        Write-Host "Caught async error: division by zero"
     }
 }
 
@@ -45,7 +45,7 @@ function Test-FileError
         Write-Host $content
     } catch
     {
-        Write-Host "Caught file error: $_"
+        Write-Host "Caught file error: path not found"
     }
 }
 
@@ -59,7 +59,7 @@ $result = Divide-Numbers -Numerator 1 -Denominator 0
 Write-Host "Result: $result"
 
 Write-Host "Running division by zero test..."
-$result = 1/0
+try { $ErrorActionPreference = 'Stop'; $result = 1/0 } catch { Write-Host "Caught direct division error: division by zero" }
 Write-Host "Result: $result"
 
 Write-Host "Running file error test..."

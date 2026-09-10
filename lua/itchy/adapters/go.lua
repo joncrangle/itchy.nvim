@@ -291,6 +291,142 @@ end
 
 M._code_uses_package = code_uses_package
 
+--- Read a Go import path literal at a byte position. The returned value is
+--- the literal contents, without its delimiters; escaped interpreted strings
+--- are intentionally not decoded because an escaped import path is not a
+--- valid match for the package names this adapter retains.
+---@param source string
+---@param n integer #source
+---@param pos integer 1-based byte position
+---@return integer? next byte position
+---@return string? value
+local function read_import_literal(source, n, pos)
+	local quote = source:byte(pos)
+	if quote == 34 then -- interpreted string
+		local j = pos + 1
+		while j <= n do
+			local b = source:byte(j)
+			if b == 92 then -- backslash escapes the next byte
+				j = j + 2
+			elseif b == 34 then
+				return j + 1, source:sub(pos + 1, j - 1)
+			else
+				j = j + 1
+			end
+		end
+	elseif quote == 96 then -- raw string
+		local close = source:find("`", pos + 1, true)
+		if close ~= nil then
+			return close + 1, source:sub(pos + 1, close - 1)
+		end
+	end
+	return nil, nil
+end
+
+--- Skip Go whitespace and comments without skipping string literals.
+---@param source string
+---@param n integer #source
+---@param pos integer 1-based byte position
+---@return integer
+local function skip_import_gap(source, n, pos)
+	while pos <= n do
+		local b = source:byte(pos)
+		if b == 32 or b == 9 or b == 10 or b == 13 then
+			pos = pos + 1
+		elseif b == 47 and (source:byte(pos + 1) == 47 or source:byte(pos + 1) == 42) then
+			pos = span_end(source, n, pos) or (pos + 1)
+		else
+			break
+		end
+	end
+	return pos
+end
+
+--- Read one import spec and report whether it is an unaliased import of pkg.
+--- Aliased, dot, and blank imports remain untouched by selector rewriting and
+--- therefore must not trigger a reference to the default package name.
+---@param source string
+---@param n integer #source
+---@param pos integer 1-based byte position
+---@param pkg string
+---@return boolean matched
+---@return integer next_pos
+local function import_spec_matches(source, n, pos, pkg)
+	local alias = nil
+	pos = skip_import_gap(source, n, pos)
+	local b = source:byte(pos)
+	if b ~= 34 and b ~= 96 then
+		if b == 46 then
+			alias = "."
+			pos = pos + 1
+		elseif is_ident_byte(b) then
+			local start = pos
+			while pos <= n and is_ident_byte(source:byte(pos)) do
+				pos = pos + 1
+			end
+			alias = source:sub(start, pos - 1)
+		else
+			return false, pos + 1
+		end
+		pos = skip_import_gap(source, n, pos)
+	end
+
+	local next_pos, value = read_import_literal(source, n, pos)
+	if next_pos == nil then
+		return false, pos + 1
+	end
+	return value == pkg and (alias == nil or alias == pkg), next_pos
+end
+
+--- Whether source contains an actual unaliased import declaration for pkg.
+--- Comments and strings are skipped before finding `import`, and only import
+--- specs are inspected afterward. This avoids treating quoted text such as
+--- `// "fmt"` as an import that needs a generated package reference.
+---@param source string
+---@param pkg string "fmt" or "log"
+---@return boolean
+local function has_default_import(source, pkg)
+	local n = #source
+	local i = 1
+	while i <= n do
+		local after = span_end(source, n, i)
+		if after ~= nil then
+			i = after
+		elseif source:sub(i, i + 5) == "import"
+			and (i == 1 or not is_ident_byte(source:byte(i - 1)))
+			and not is_ident_byte(source:byte(i + 6))
+			and source:byte(i - 1) ~= 46
+		then
+			local pos = skip_import_gap(source, n, i + 6)
+			if source:byte(pos) == 40 then -- grouped import declaration
+				pos = pos + 1
+				while pos <= n do
+					pos = skip_import_gap(source, n, pos)
+					if source:byte(pos) == 41 then
+						break
+					end
+					local matched, next_pos = import_spec_matches(source, n, pos, pkg)
+					if matched then
+						return true
+					end
+					pos = math.max(next_pos, pos + 1)
+				end
+			else -- single import declaration; its first spec is all that matters
+				local matched = import_spec_matches(source, n, pos, pkg)
+				if matched then
+					return true
+				end
+			end
+			i = i + 6
+		else
+			i = i + 1
+		end
+	end
+	return false
+end
+
+M._has_import = has_default_import
+
 --- Instrument with Tree-sitter when available, else the embedded scanner.
 ---@param source string
 ---@return string instrumented source
@@ -430,11 +566,15 @@ end
 ---@param user_file string
 ---@param header_offset integer
 ---@return itchy.Event[]
+---@return table<string, integer> consumed diagnostic lines
 local function parse_compiler_errors(stderr_text, user_file, header_offset)
 	local events = {}
+	---@type table<string, integer>
+	local consumed = {}
 	framed.each_line(stderr_text, function(line)
 		local path, lnum, col, msg = line:match("^(.-%.go):(%d+):(%d+):?%s*(.*)$")
 		if path ~= nil and utils.is_user_file(path, user_file, "itchy_helper.go") then
+			consumed[line] = (consumed[line] or 0) + 1
 			local src_line = tonumber(lnum) - (header_offset or 0)
 			local src_col = tonumber(col)
 			msg = msg ~= "" and msg or line
@@ -445,7 +585,7 @@ local function parse_compiler_errors(stderr_text, user_file, header_offset)
 			end
 		end
 	end)
-	return events
+	return events, consumed
 end
 
 --- Parse a native panic: `panic: ...` message plus the first stack frame
@@ -506,15 +646,14 @@ function M.prepare(ctx)
 	-- scanner. Either way every output call is instrumented.
 	local instrumented = instrument(base)
 
-	-- Keep explicit imports used: replacing every fmt/log call can leave the
-	-- import unused (a per-file compile error). Appending a package-level
+	-- Keep actual unaliased imports used: replacing every fmt/log call can leave
+	-- the import unused (a per-file compile error). Appending a package-level
 	-- blank reference after the user code preserves all existing line numbers.
-	-- Code-aware like wrap_fragment: a `fmt.` inside a comment or string
-	-- must not count as a use, or the keep would be skipped and the build
-	-- would fail on an unused import.
-	for _, keep in ipairs({ { '"fmt"', "fmt", "fmt.Sprint" }, { '"log"', "log", "log.Print" } }) do
-		if base:find(keep[1], 1, true) ~= nil and not code_uses_package(instrumented, keep[2]) then
-			instrumented = instrumented .. "\nvar _ = " .. keep[3] .. " // itchy: keep import used\n"
+	-- Inspect import declarations rather than searching quoted text, so a
+	-- `fmt` mention in a comment or string cannot introduce an invalid reference.
+	for _, keep in ipairs({ { "fmt", "fmt.Sprint" }, { "log", "log.Print" } }) do
+		if has_default_import(base, keep[1]) and not code_uses_package(instrumented, keep[1]) then
+			instrumented = instrumented .. "\nvar _ = " .. keep[2] .. " // itchy: keep import used\n"
 		end
 	end
 
@@ -590,15 +729,14 @@ function M.decode(ctx, prepared, result)
 		if line ~= "" and line ~= nil then
 			-- Uninstrumented stdout (os.Stdout writes, external commands) stays
 			-- visible as locationless output; never attribute a fake line.
-			-- Skip `go run` build headers; real diagnostics live on stderr.
-			if not line:match("^#%s") then
-				table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
-			end
+			-- Go build headers are emitted on stderr; a user's stdout is never
+			-- diagnostic noise, even when it starts with `# `.
+			table.insert(events, event.create("stdout", framed.sanitize_message(line), nil))
 		end
 	end)
 
 	local stderr_text = type(result.stderr) == "string" and result.stderr or ""
-	local compiler_events = parse_compiler_errors(stderr_text, user_file, header_offset)
+	local compiler_events, compiler_lines = parse_compiler_errors(stderr_text, user_file, header_offset)
 	for _, e in ipairs(compiler_events) do
 		table.insert(events, e)
 	end
@@ -607,35 +745,37 @@ function M.decode(ctx, prepared, result)
 			table.insert(events, e)
 		end
 	end
-	-- Native `go run` failure footers without locations (e.g. `exit status 2`
-	-- after a parsed panic) carry no new information; drop them. Anything
-	-- else meaningful on stderr that we cannot locate becomes a locationless
-	-- error rather than a guess.
-	if #compiler_events == 0 then
-		local saw_panic = stderr_text:match("panic:") ~= nil
-		if not saw_panic then
-			local meaningful = {}
-			framed.each_line(stderr_text, function(line)
-				local t = line:match("^%s*(.-)%s*$")
-				if t == "" or t:match("^#%s") or t:match("^exit%s+status") then
-					return
-				end
-				-- Already-consumed diagnostic frames; the message lives in events.
-				if t:match("%.go:%d+") or t:match("^goroutine%s+%d+") or t:match("^main%.") then
-					return
-				end
-				table.insert(meaningful, t)
-			end)
-			if #meaningful > 0 and #events == 0 then
-				-- Only surface locationless stderr when nothing else explains the
-				-- failure; framed output already visible must not gain noise.
-				local joined = table.concat(meaningful, " ")
-				if joined ~= "" then
-					table.insert(events, event.create("error", framed.sanitize_message(joined), nil))
-				end
-			end
+	-- Filter only output known to be produced by `go run` itself. Every other
+	-- stderr line remains visible as its own locationless error, regardless of
+	-- framed output or located diagnostics already present in the run.
+	local function consume_compiler_line(line)
+		if (compiler_lines[line] or 0) > 0 then
+			compiler_lines[line] = compiler_lines[line] - 1
+			return true
 		end
+		return false
 	end
+	framed.each_line(stderr_text, function(line)
+		if consume_compiler_line(line) then
+			return
+		end
+		local t = line:match("^%s*(.-)%s*$")
+		if t == "" or t:match("^#%s") or t:match("^exit%s+status") then
+			return
+		end
+		-- Panic details and Go stack frames have already been represented by the
+		-- panic event, when present. Compiler/stack locations are also native
+		-- diagnostics rather than user messages.
+		if t:match("^panic:")
+			or t:match("^goroutine%s+%d+")
+			or t:match("^main%.")
+			or t:match("^created by%s+")
+			or t:match("%.go:%d+")
+		then
+			return
+		end
+		table.insert(events, event.create("error", framed.sanitize_message(t), nil))
+	end)
 
 	return events
 end

@@ -34,17 +34,21 @@ local function group_events(events, line_count)
 	return by_line, locationless, invalid
 end
 
---- Notify about a locationless diagnostic, surfacing unattributed errors
---- via vim.notify instead of an extmark.
+--- Notify about a locationless diagnostic, surfacing unattributed warnings and
+--- errors via vim.notify instead of an extmark.
+---@param kind itchy.EventKind
 ---@param message string
-local function notify_locationless(message)
+local function notify_locationless(kind, message)
 	local msg = message or "Unknown error."
+	local is_warning = kind == "warning"
+	local level = is_warning and vim.log.levels.WARN or vim.log.levels.ERROR
+	local label = is_warning and "warning" or "error"
 	local is_headless = not vim.env.DISPLAY and #vim.api.nvim_list_uis() == 0
 	vim.schedule(function()
 		if is_headless then
-			vim.notify("itchy error: " .. msg, vim.log.levels.ERROR, { title = "itchy" })
+			vim.notify("itchy " .. label .. ": " .. msg, level, { title = "itchy" })
 		else
-			vim.notify(msg, vim.log.levels.ERROR, { title = "itchy" })
+			vim.notify(msg, level, { title = "itchy" })
 		end
 	end)
 end
@@ -101,7 +105,7 @@ function M.render(buf, namespace, events, opts)
 				if type(on_locationless) == "function" then
 					pcall(on_locationless, e)
 				else
-					notify_locationless(e.message)
+					notify_locationless(e.kind, e.message)
 				end
 			elseif e.kind == "stdout" then
 				vim.api.nvim_buf_set_extmark(buf, namespace, 0, 0, {

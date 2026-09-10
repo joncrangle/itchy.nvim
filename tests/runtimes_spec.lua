@@ -2,20 +2,26 @@ local itchy = require 'itchy'
 local runtimes = require 'itchy.runtimes'
 local assert = require 'luassert'
 
+local eq = assert.are.equal
+local truthy = assert.is_true
+
 local pending = pending or function(message)
-  print('SKIPPED: ' .. message)
+  print('SKIPPED: ' .. tostring(message))
   io.stdout:flush()
   return true
 end
 
 local api = vim.api
 
+---@class itchy.RuntimeExpectation
+---@field text string exact rendered virtual-line text
+---@field row integer 0-based extmark row
+---@field highlight string exact content highlight group
+
 ---@class itchy.TestCase
 ---@field path string
 ---@field runtimes string[]
----@field expected string[]
----@field pass_min? integer
----@field highlight_checks? {text: string, hl: string}[]
+---@field expected itchy.RuntimeExpectation[]
 
 ---@type table<string, itchy.TestCase>
 local test_cases = {
@@ -23,143 +29,110 @@ local test_cases = {
     runtimes = { 'python', 'uv' },
     path = 'tests/test_files/python.py',
     expected = {
-      'Hello from Python',
-      'division by zero',
-      'Async operation complete',
-      'No such file or directory',
+      { text = 'Hello from Python', row = 2, highlight = 'Comment' },
+      { text = 'Caught runtime error: division by zero', row = 14, highlight = 'DiagnosticError' },
+      { text = 'Caught file error: No such file or directory', row = 33, highlight = 'DiagnosticError' },
+      { text = 'Async operation complete', row = 20, highlight = 'Comment' },
+      { text = 'Caught async error: division by zero', row = 24, highlight = 'DiagnosticError' },
     },
   },
   javascript = {
     runtimes = { 'deno', 'bun', 'node' },
     path = 'tests/test_files/javascript.js',
     expected = {
-      'Hello from JavaScript',
-      'Cannot divide by zero',
-      'Async operation complete',
-      'Async error: Cannot divide by zero',
-      'no such file or directory',
-    },
-    highlight_checks = {
-      { text = 'Hello from JavaScript', hl = 'Comment' },
-      { text = 'Cannot divide by zero', hl = 'DiagnosticError' },
-      { text = 'Async operation complete', hl = 'Comment' },
+      { text = 'Hello from JavaScript', row = 0, highlight = 'Comment' },
+      { text = 'Error: Cannot divide by zero', row = 11, highlight = 'DiagnosticError' },
+      { text = 'Async operation complete', row = 16, highlight = 'Comment' },
+      { text = 'Async error: Cannot divide by zero', row = 20, highlight = 'DiagnosticError' },
+      { text = 'File error: no such file or directory', row = 31, highlight = 'DiagnosticError' },
     },
   },
   typescript = {
     runtimes = { 'deno', 'bun', 'node' },
     path = 'tests/test_files/typescript.ts',
     expected = {
-      'Hello from TypeScript',
-      'Cannot divide by zero',
-      'Async operation complete',
-      'Async error: Cannot divide by zero',
-      'no such file or directory',
-    },
-    highlight_checks = {
-      { text = 'Hello from TypeScript', hl = 'Comment' },
-      { text = 'Cannot divide by zero', hl = 'DiagnosticError' },
-      { text = 'Async operation complete', hl = 'Comment' },
+      { text = 'Hello from TypeScript', row = 0, highlight = 'Comment' },
+      { text = 'Error: Cannot divide by zero', row = 11, highlight = 'DiagnosticError' },
+      { text = 'Async operation complete', row = 17, highlight = 'Comment' },
+      { text = 'Async error: Cannot divide by zero', row = 21, highlight = 'DiagnosticError' },
+      { text = 'File error: No such file or directory', row = 30, highlight = 'DiagnosticError' },
     },
   },
   go = {
     runtimes = { 'go' },
     path = 'tests/test_files/go.go',
     expected = {
-      'Hello from Go',
-      'Formatted number: 42',
-      'This is a log message',
-      'Async operation complete',
-      'File error:',
-      'divide by zero',
-    },
-    -- Verify stdout (including log.Println) maps to Comment, not DiagnosticError
-    highlight_checks = {
-      { text = 'Hello from Go', hl = 'Comment' },
-      { text = 'This is a log message', hl = 'Comment' },
-      { text = 'File error:', hl = 'Comment' },
-      { text = 'divide by zero', hl = 'DiagnosticError' },
+      { text = 'Hello from Go', row = 16, highlight = 'Comment' },
+      { text = 'Formatted number: 42', row = 17, highlight = 'Comment' },
+      { text = 'This is a log message', row = 20, highlight = 'Comment' },
+      { text = 'Async operation complete', row = 28, highlight = 'Comment' },
+      { text = 'File error: open non_existent_file.txt: no such file or directory', row = 36, highlight = 'Comment' },
+      { text = 'panic: runtime error: integer divide by zero', row = 11, highlight = 'DiagnosticError' },
     },
   },
   bash = {
     runtimes = { 'bash' },
     path = 'tests/test_files/bash.sh',
     expected = {
-      'Hello from Bash',
-      'Async operation complete',
-      'division by 0',
+      { text = 'Hello from Bash', row = 2, highlight = 'Comment' },
+      { text = 'Async operation complete', row = 12, highlight = 'Comment' },
+      { text = '1 / 0: division by 0', row = 6, highlight = 'DiagnosticError' },
     },
   },
   sh = {
     runtimes = { 'sh' },
     path = 'tests/test_files/bash.sh',
     expected = {
-      'Hello from Bash',
-      'Async operation complete',
-      'division by 0',
+      { text = 'Hello from Bash', row = 2, highlight = 'Comment' },
+      { text = 'Async operation complete', row = 12, highlight = 'Comment' },
+      -- `/bin/sh` on the supported Unix clients is either Bash-as-sh or
+      -- dash. Both keep the native source row; their wording differs only in
+      -- the final zero token.
+      { text = '1 / 0: division by 0', row = 6, highlight = 'DiagnosticError' },
     },
-    pass_min = 2,
   },
   zsh = {
     runtimes = { 'zsh' },
     path = 'tests/test_files/bash.sh',
     expected = {
-      'Hello from Bash',
-      'Async operation complete',
-      'division by 0',
+      { text = 'Hello from Bash', row = 2, highlight = 'Comment' },
+      { text = 'Async operation complete', row = 12, highlight = 'Comment' },
+      { text = 'division by zero', row = 6, highlight = 'DiagnosticError' },
     },
-    pass_min = 2,
   },
   ps1 = {
     runtimes = { 'pwsh', 'powershell' },
     path = 'tests/test_files/pwsh.ps1',
     expected = {
-      'Hello from PowerShell',
-      'Echo from PowerShell',
-      'Caught division error',
-      'Starting async operation',
-      'Async operation complete',
-      'Caught async error',
-      'Caught file error',
-      'Result: 5',
-      'Attempted to divide by zero',
+      { text = 'Hello from PowerShell', row = 0, highlight = 'Comment' },
+      { text = 'Echo from PowerShell', row = 1, highlight = 'Comment' },
+      { text = 'Caught division error: Attempted to divide by zero', row = 17, highlight = 'Comment' },
+      { text = 'Starting async operation...', row = 25, highlight = 'Comment' },
+      { text = 'Async operation complete', row = 27, highlight = 'Comment' },
+      { text = 'Caught async error: division by zero', row = 34, highlight = 'Comment' },
+      { text = 'Caught file error: path not found', row = 47, highlight = 'Comment' },
+      { text = 'Running division test...', row = 52, highlight = 'Comment' },
+      { text = 'Result: 5', row = 54, highlight = 'Comment' },
+      { text = 'Running division by zero test with catch...', row = 56, highlight = 'Comment' },
+      { text = 'Result: ', row = 58, highlight = 'Comment' },
+      { text = 'Running division by zero test...', row = 60, highlight = 'Comment' },
+      { text = 'Caught direct division error: division by zero', row = 61, highlight = 'Comment' },
+      { text = 'Result: ', row = 62, highlight = 'Comment' },
+      { text = 'Running file error test...', row = 64, highlight = 'Comment' },
+      { text = 'Running async test...', row = 67, highlight = 'Comment' },
+      { text = 'All tests completed', row = 70, highlight = 'Comment' },
     },
   },
 }
 
---- Normalize whitespace and remove extra spaces
----@param str string
----@return string
-local function normalize(str)
-  return str:match('^%s*(.-)%s*$'):gsub('%s+', ' ')
-end
-
---- Check if the expected string is contained within the actual string
----@param actual string
----@param expected string
----@return boolean
-local function fuzzy_match(actual, expected)
-  local actual_norm = normalize(actual)
-  local expected_norm = normalize(expected)
-  return actual_norm:find(expected_norm, 1, true) ~= nil
-end
-
---- Read a file and split it by lines
----@param path string
----@return string[]
 local function read_file(path)
   local file = io.open(path, 'r')
-  if not file then
-    return {}
-  end
+  assert(file ~= nil, 'Failed to read test file: ' .. path)
   local content = file:read '*a'
   file:close()
   return vim.split(content, '\n')
 end
 
---- Create a test buffer with the given filetype and content
----@param filetype string
----@param content string[]
----@return integer
 local function setup_test_buffer(filetype, content)
   local buf = api.nvim_create_buf(false, true)
   vim.bo[buf].filetype = filetype
@@ -168,60 +141,66 @@ local function setup_test_buffer(filetype, content)
   return buf
 end
 
---- Get the extmark text for a buffer and namespace
----@param buf integer
----@param namespace integer
----@return string[]
-local function get_extmark_text(buf, namespace)
-  local extmarks = api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
-  local output = {}
-
-  for _, mark in ipairs(extmarks) do
-    -- Check for virt_lines
-    if mark[4] and mark[4].virt_lines then
-      for _, line in ipairs(mark[4].virt_lines) do
-        local line_text = ''
-        for _, chunk in ipairs(line) do
-          -- Skip the divider/prefix ("  │ ")
-          if not chunk[1]:match '^%s*│%s*$' then
-            line_text = line_text .. chunk[1]
-          end
-        end
-        table.insert(output, line_text)
-      end
-    end
+local function expected_for(ft, expected)
+  if ft ~= 'sh' then
+    return expected
   end
-
-  return output
+  local shell_kind = vim.fn.system({
+    'sh',
+    '-c',
+    'if [ -n "$BASH_VERSION" ]; then printf bash; else printf posix; fi',
+  })
+  local adjusted = vim.deepcopy(expected)
+  adjusted[3].text = shell_kind == 'bash'
+    and '1 / 0: division by 0'
+    or 'arithmetic expression: division by zero: " 1 / 0 "'
+  return adjusted
 end
 
---- Get extmark details including text, highlight group, and source row
 ---@param buf integer
 ---@param namespace integer
----@return {text: string, hl: string, row: integer}[]
+---@return itchy.RuntimeExpectation[]
 local function get_extmark_details(buf, namespace)
-  local extmarks = api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
   local output = {}
-
+  local extmarks = api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
   for _, mark in ipairs(extmarks) do
     local row = mark[2]
     if mark[4] and mark[4].virt_lines then
       for _, line in ipairs(mark[4].virt_lines) do
-        local text, hl = '', nil
+        local text, highlight = '', nil
         for _, chunk in ipairs(line) do
           if not chunk[1]:match '^%s*│%s*$' then
             text = text .. chunk[1]
-            hl = hl or chunk[2]
+            highlight = highlight or chunk[2]
           end
         end
         if text ~= '' then
-          table.insert(output, { text = text, hl = hl, row = row })
+          table.insert(output, { text = text, row = row, highlight = highlight })
         end
       end
     end
   end
-
   return output
+end
+
+local function assert_exact_extmarks(actual, expected, ft, runtime)
+  eq(#actual, #expected, ('[%s/%s] exact extmark count'):format(ft, runtime))
+  local consumed = {}
+  for _, wanted in ipairs(expected) do
+    local match
+    for index, got in ipairs(actual) do
+      if not consumed[index]
+        and got.text == wanted.text
+        and got.row == wanted.row
+        and got.highlight == wanted.highlight
+      then
+        match = index
+        break
+      end
+    end
+    truthy(match ~= nil, ('[%s/%s] missing exact extmark %s'):format(ft, runtime, vim.inspect(wanted)))
+    consumed[match] = true
+  end
 end
 
 for ft, test_case in pairs(test_cases) do
@@ -229,97 +208,69 @@ for ft, test_case in pairs(test_cases) do
     local buf
 
     before_each(function()
-      -- Other spec files reset package.loaded between tests, which orphans
-      -- module instances captured at file-load time. Re-require here so the
-      -- registry below and itchy.run() observe the same live instances.
+      -- Refresh modules because the lifecycle specs deliberately reset module
+      -- instances while exercising cleanup boundaries.
       package.loaded['itchy'] = nil
       package.loaded['itchy.runtimes'] = nil
       itchy = require 'itchy'
       runtimes = require 'itchy.runtimes'
-
-      local content = read_file(test_case.path)
-      assert(content, 'Failed to read test file: ' .. test_case.path)
-
-      buf = setup_test_buffer(ft, content)
+      buf = setup_test_buffer(ft, read_file(test_case.path))
       runtimes.load_runtimes()
     end)
 
-    for _, rt in ipairs(test_case.runtimes) do
-      it(('with runtime %s'):format(rt), function()
-        if not runtimes.runtimes[ft] or not runtimes.runtimes[ft][rt] then
-          pending(('Runtime %s not available for %s'):format(rt, ft))
+    after_each(function()
+      pcall(itchy._reset_runs)
+      if buf and api.nvim_buf_is_valid(buf) then
+        pcall(api.nvim_buf_delete, buf, { force = true })
+      end
+      buf = nil
+    end)
+
+    for _, runtime_name in ipairs(test_case.runtimes) do
+      it('with runtime ' .. runtime_name, function()
+        if not runtimes.runtimes[ft] or not runtimes.runtimes[ft][runtime_name] then
+          pending(('Runtime %s is unavailable for supported filetype %s'):format(runtime_name, ft))
           return
         end
 
-        -- sh runs through the POSIX-safe compatibility adapter,
-        -- which works under dash as well as bash-as-sh.
-        -- Get the namespace name upfront
         local namespace_name = 'itchy_' .. ft .. '_result'
-
-        -- Run the code
-        print(('Running %s with runtime %s'):format(ft, rt))
-        itchy.run(rt)
-
-        -- Wait for namespace to be created
-        local ns_wait_success = vim.wait(2000, function()
-          local namespaces = vim.api.nvim_get_namespaces()
-          return namespaces[namespace_name] ~= nil
-        end, 50)
-
-        assert(ns_wait_success, 'Namespace was not created within timeout')
-        local ns_id = vim.api.nvim_get_namespaces()[namespace_name]
-
-        -- Wait for the extmarks (generous: cold `go run` compiles on CI)
-        local initial_wait_success = vim.wait(30000, function()
-          local extmarks = get_extmark_text(buf, ns_id)
-          return #extmarks > 0
-        end, 50)
-
-        assert(initial_wait_success, 'No extmarks appeared within initial timeout')
-
-        -- Get the final extmarks for assertion
-        local extmarks = get_extmark_text(buf, ns_id)
-
-        local expected = test_case.expected
-        local pass_min = test_case.pass_min or #test_case.expected
-        local passes = 0
-        for _, expected_str in ipairs(expected) do
-          local found_match = false
-          local missed_str
-          for _, actual_str in ipairs(extmarks) do
-            if fuzzy_match(actual_str, expected_str) then
-              passes = passes + 1
-              found_match = true
-              break
-            end
-            missed_str = actual_str
-          end
-          if not found_match then
-            print(('  [FAIL] Expected: %s'):format(expected_str))
-            print(('  [FAIL] FOUND: %s'):format(missed_str))
+        local expected = expected_for(ft, test_case.expected)
+        local notifications = {}
+        local original_notify
+        if ft == 'javascript' or ft == 'typescript' then
+          original_notify = vim.notify
+          vim.notify = function(message, level, opts)
+            table.insert(notifications, { message = message, level = level, opts = opts })
           end
         end
-
-        assert(passes >= pass_min, string.format('Expected at least %d matches, but got %d in runtime %s.', pass_min, passes, rt))
-
-        -- Highlight group assertions: verify correct kind -> highlight mapping
-        if test_case.highlight_checks then
-          local details = get_extmark_details(buf, ns_id)
-          for _, check in ipairs(test_case.highlight_checks) do
-            local matched = false
-            for _, d in ipairs(details) do
-              if fuzzy_match(d.text, check.text) then
-                assert(d.hl == check.hl,
-                  string.format('[%s/%s] "%s" expected hl=%s, got hl=%s (row %d)',
-                    ft, rt, check.text, check.hl, d.hl or 'nil', d.row))
-                matched = true
-                break
-              end
-            end
-            if not matched then
-              print(string.format('  [WARN] highlight check: "%s" not found in extmarks for %s/%s', check.text, ft, rt))
-            end
+        local run_ok, run_err = pcall(itchy.run, runtime_name, buf)
+        if not run_ok then
+          if original_notify then
+            vim.notify = original_notify
           end
+          error(run_err, 0)
+        end
+        local ok, err = pcall(function()
+          local namespace_ready = vim.wait(2000, function()
+            return api.nvim_get_namespaces()[namespace_name] ~= nil
+          end, 50)
+          truthy(namespace_ready, ('[%s/%s] result namespace was not created'):format(ft, runtime_name))
+          local namespace = api.nvim_get_namespaces()[namespace_name]
+          local result_ready = vim.wait(30000, function()
+            return #get_extmark_details(buf, namespace) >= #expected
+          end, 50)
+          truthy(result_ready, ('[%s/%s] expected extmarks did not appear'):format(ft, runtime_name))
+          vim.wait(1000)
+          if ft == 'javascript' or ft == 'typescript' then
+            eq(#notifications, 0, ('[%s/%s] warning-free fixture'):format(ft, runtime_name))
+          end
+          assert_exact_extmarks(get_extmark_details(buf, namespace), expected, ft, runtime_name)
+        end)
+        if original_notify then
+          vim.notify = original_notify
+        end
+        if not ok then
+          error(err, 0)
         end
       end)
     end

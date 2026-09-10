@@ -6,7 +6,7 @@ M.runtimes = {}
 
 ---@class itchy.Runtime
 ---@field cmd string
----@field args string[]
+---@field args? string[]
 ---@field adapter string|itchy.RuntimeAdapter adapter name or custom adapter module
 ---@field temp_file? boolean
 ---@field env? table<string, string>
@@ -39,7 +39,7 @@ end
 
 --- Create a runtime configuration
 ---@param cmd string
----@param args string[]
+---@param args? string[]
 ---@param adapter string|itchy.RuntimeAdapter
 ---@param temp_file? boolean
 ---@param env? table<string, string>
@@ -86,7 +86,7 @@ M.available_runtimes = {
   typescript = {
     bun = M.create_runtime('bun', { 'run' }, 'javascript', true),
     deno = M.create_runtime('deno', { 'eval', '--ext=ts' }, 'javascript', false),
-    node = M.create_runtime('node', { '--no-warnings', '-e' }, 'javascript', false),
+    node = M.create_runtime('node', { '-e' }, 'javascript', false),
   },
   python = {
     python = get_python_runtime(),
@@ -96,7 +96,9 @@ M.available_runtimes = {
     bash = M.create_runtime('bash', {}, 'bash'),
   },
   zsh = {
-    zsh = M.create_runtime('zsh', {}, 'zsh'),
+    -- Do not let a user's zshrc alter the fixture's options, aliases, or
+    -- error handling. The adapter supplies its own launcher and source file.
+    zsh = M.create_runtime('zsh', { '-f' }, 'zsh'),
   },
   sh = {
     sh = M.create_runtime('sh', {}, 'sh'),
@@ -121,4 +123,3 @@ function M.load_runtimes()
 end
 
 return M
-

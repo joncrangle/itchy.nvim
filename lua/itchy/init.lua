@@ -204,16 +204,28 @@ function M.setup(opts)
     local clear_key = (type(config.cfg.integrations.snacks) == 'table'
       and config.cfg.integrations.snacks.keys
       and config.cfg.integrations.snacks.keys.clear) or '<BS>'
+    local run_key = (type(config.cfg.integrations.snacks) == 'table'
+      and config.cfg.integrations.snacks.keys
+      and config.cfg.integrations.snacks.keys.run) or '<CR>'
     local snacks_lua_opts = { scratch = { win_by_ft = {} } }
     snacks_lua_opts.scratch.win_by_ft['lua'] = {
       keys = {
         ['clear'] = {
           clear_key,
           function(self)
-            local ns_id = vim.api.nvim_get_namespaces()['snacks_debug']
-            vim.api.nvim_buf_clear_namespace(self.buf, ns_id, 0, -1)
+            -- Let the public clear path handle an as-yet uninitialized
+            -- Snacks debug namespace (and any active Itchy run).
+            require('itchy').clear(self.buf)
           end,
           desc = 'Clear',
+          mode = { 'n', 'x' },
+        },
+        ['run'] = {
+          run_key,
+          function(self)
+            require('itchy').run(self.buf)
+          end,
+          desc = 'Run code',
           mode = { 'n', 'x' },
         },
       },
@@ -276,7 +288,7 @@ function M.run(rt, buf)
   -- snacks.nvim delegation for lua (lua is not an itchy runtime)
   if ft == 'lua' and utils.is_snacks_enabled() and package.loaded['snacks'] then
     local snacks = package.loaded['snacks']
-    snacks.debug.run()
+    snacks.debug.run({ buf = buf })
     return
   end
 

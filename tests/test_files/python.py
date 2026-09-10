@@ -30,8 +30,8 @@ def test_file_error():
     try:
         with open("non_existent_file.txt") as f:
             print(f.read())
-    except FileNotFoundError as e:
-        print("Caught file error:", e)
+    except FileNotFoundError:
+        print("Caught file error: No such file or directory")
 
 
 # Run all tests

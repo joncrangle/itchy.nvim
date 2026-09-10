@@ -92,51 +92,29 @@ describe('itchy.renderer', function()
     truthy(texts[1]:find('a | b', 1, true) ~= nil)
   end)
 
-  it('renders error events with error highlighting', function()
-    render_and_wait(buf, ns, { { kind = 'error', line = 3, message = 'boom' } })
-    local texts = get_marks(buf, ns)
-    eq(#texts, 1)
-    truthy(texts[1]:find('boom', 1, true) ~= nil)
-    local hls = get_hls(buf, ns)
-    eq(#hls, 1)
-    eq(hls[1], 'DiagnosticError')
-  end)
+	for _, case in ipairs({
+		{ kind = 'stdout', line = 2, message = 'stdout', highlight = 'Comment' },
+		{ kind = 'stderr', line = 3, message = 'stderr', highlight = 'DiagnosticError' },
+		{ kind = 'error', line = 4, message = 'error', highlight = 'DiagnosticError' },
+		{ kind = 'warning', line = 5, message = 'warning', highlight = 'DiagnosticWarn' },
+	}) do
+		it('renders ' .. case.kind .. ' at the exact row with its highlight', function()
+			render_and_wait(buf, ns, { case })
+			local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+			eq(#marks, 1)
+			eq(marks[1][2], case.line - 1)
+			eq(get_marks(buf, ns)[1], case.message)
+			eq(get_hls(buf, ns)[1], case.highlight)
+		end)
+	end
 
-  it('renders stderr events with error highlighting', function()
-    render_and_wait(buf, ns, { { kind = 'stderr', line = 3, message = 'to-err' } })
-    local hls = get_hls(buf, ns)
-    eq(#hls, 1)
-    eq(hls[1], 'DiagnosticError')
-  end)
-
-  it('renders stdout events with stdout highlighting', function()
-    render_and_wait(buf, ns, { { kind = 'stdout', line = 2, message = 'hi' } })
-    local hls = get_hls(buf, ns)
-    eq(#hls, 1)
-    eq(hls[1], 'Comment')
-  end)
-
-  it('renders warning events alongside errors', function()
-    renderer.render(buf, ns, {
-      { kind = 'warning', line = 2, message = 'careful' },
-    })
-    vim.wait(2000, function()
-      return #get_marks(buf, ns) > 0
-    end, 50)
-    local texts = get_marks(buf, ns)
-    eq(#texts, 1)
-    truthy(texts[1]:find('careful', 1, true) ~= nil)
-    local hls = get_hls(buf, ns)
-    eq(#hls, 1)
-    eq(hls[1], 'DiagnosticWarn')
-  end)
-
-  it('ignores the optional column when rendering', function()
-    render_and_wait(buf, ns, { { kind = 'stdout', line = 2, message = 'hi', column = 7 } })
-    local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
-    eq(#marks, 1)
-    eq(marks[1][2], 1)
-  end)
+	it('ignores the optional column while preserving the exact row', function()
+		render_and_wait(buf, ns, { { kind = 'stdout', line = 2, message = 'hi', column = 7 } })
+		local marks = api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+		eq(#marks, 1)
+		eq(marks[1][2], 1)
+		eq(get_marks(buf, ns)[1], 'hi')
+	end)
 
   it('renders stdout and error on the same source line separately', function()
     renderer.render(buf, ns, {
@@ -171,6 +149,36 @@ describe('itchy.renderer', function()
     eq(#seen, 1)
     eq(seen[1].message, 'nowhere')
     eq(#get_marks(buf, ns), 0)
+  end)
+
+  it('notifies locationless warnings at WARN and errors at ERROR', function()
+    local original_notify = vim.notify
+    local seen = {}
+    local headless = not vim.env.DISPLAY and #vim.api.nvim_list_uis() == 0
+    vim.notify = function(message, level, opts)
+      table.insert(seen, { message = message, level = level, opts = opts })
+    end
+    local ok, err = pcall(function()
+      renderer.render(buf, ns, { { kind = 'warning', line = nil, message = 'careful' } })
+      vim.wait(500, function()
+        return #seen >= 1
+      end, 50)
+      eq(#seen, 1)
+      eq(seen[1].level, vim.log.levels.WARN)
+      eq(seen[1].message, headless and 'itchy warning: careful' or 'careful')
+
+      renderer.render(buf, ns, { { kind = 'error', line = nil, message = 'broken' } })
+      vim.wait(500, function()
+        return #seen >= 2
+      end, 50)
+      eq(#seen, 2)
+      eq(seen[2].level, vim.log.levels.ERROR)
+      eq(seen[2].message, headless and 'itchy error: broken' or 'broken')
+    end)
+    vim.notify = original_notify
+    if not ok then
+      error(err, 0)
+    end
   end)
 
   it('clamps out-of-range lines to the last line', function()

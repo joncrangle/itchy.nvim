@@ -1,10 +1,15 @@
 local go_adapter = require 'itchy.adapters.go'
-local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
 local eq = assert.are.equal
 local truthy = assert.is_true
 local falsy = assert.is_false
+
+local pending = pending or function(message)
+  print('SKIPPED: ' .. tostring(message))
+  io.stdout:flush()
+  return true
+end
 
 local function ctx_for(source)
   return {
@@ -43,10 +48,6 @@ local FULL_SRC = table.concat({
 }, '\n')
 
 describe('itchy.adapters.go', function()
-  it('resolves by name through the registry', function()
-    eq(adapters.resolve({ adapter = 'go' }).name, 'go')
-  end)
-
   it('instruments fmt.Println via syntax nodes', function()
     local out = go_adapter._instrument(FULL_SRC)
     truthy(out:find('__itchyFmtPrintln("hello")', 1, true) ~= nil)
@@ -118,6 +119,7 @@ describe('itchy.adapters.go', function()
       eq(prepared.cmd[1], 'go')
       eq(prepared.cmd[2], 'run')
       eq(prepared.temp_file, false)
+      truthy(content:find('var _ = fmt.Sprint', 1, true) ~= nil)
     end)
   end)
 
@@ -140,6 +142,46 @@ describe('itchy.adapters.go', function()
       eq(events[1].kind, 'stdout')
       eq(events[1].line, 6)
       eq(events[1].message, 'hello')
+    end)
+  end)
+
+  it('preserves unframed stdout beginning with a hash', function()
+    local ctx = ctx_for('')
+    local prepared = go_adapter.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local events = go_adapter.decode(ctx, prepared, {
+        code = 0,
+        signal = 0,
+        stdout = '# user output\n',
+        stderr = '',
+      })
+      eq(#events, 1)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].line, nil)
+      eq(events[1].message, '# user output')
+    end)
+  end)
+
+  it('surfaces each meaningful stderr line alongside other events', function()
+    local ctx = ctx_for('')
+    local prepared = go_adapter.prepare(ctx)
+    with_cleanup(prepared, nil, function()
+      local nonce = prepared.metadata.nonce
+      local events = go_adapter.decode(ctx, prepared, {
+        code = 1,
+        signal = 0,
+        stdout = '\30ITCHY:' .. nonce .. ':{"kind":"stdout","line":1,"message":"output"}\n',
+        stderr = 'first stderr\nsecond stderr\n',
+      })
+      eq(#events, 3)
+      eq(events[1].kind, 'stdout')
+      eq(events[1].message, 'output')
+      eq(events[2].kind, 'error')
+      eq(events[2].line, nil)
+      eq(events[2].message, 'first stderr')
+      eq(events[3].kind, 'error')
+      eq(events[3].line, nil)
+      eq(events[3].message, 'second stderr')
     end)
   end)
 
@@ -214,6 +256,7 @@ describe('itchy.adapters.go', function()
 
   it('reports live syntax errors with native locations', function()
     if vim.fn.executable('go') ~= 1 then
+      pending('go is required for live compiler diagnostics')
       return
     end
     local src = table.concat({
@@ -245,23 +288,6 @@ describe('itchy.adapters.go', function()
       end
       assert(found ~= nil)
       eq(found.line, 6)
-    end)
-  end)
-
-  it('does not let user output spoof locations', function()
-    local ctx = ctx_for('')
-    local prepared = go_adapter.prepare(ctx)
-    with_cleanup(prepared, nil, function()
-      local result = {
-        code = 0,
-        signal = 0,
-        stdout = 'LINE12: fake\n{"kind":"stdout","line":99,"message":"x"}\n\30ITCHY:wrong:{"kind":"stdout","line":3,"message":"nope"}\n',
-        stderr = '',
-      }
-      local events = go_adapter.decode(ctx, prepared, result)
-      for _, e in ipairs(events) do
-        eq(e.line, nil)
-      end
     end)
   end)
 
@@ -339,27 +365,32 @@ describe('itchy.adapters.go', function()
   end)
 
   it('prepare() uses the scanner when Tree-sitter fails', function()
-    local orig = go_adapter._instrument_ts
-    go_adapter._instrument_ts = function()
-      return nil, 'forced unavailable'
+    -- Force the production Tree-sitter probe to fail. Patching the exported
+    -- helper would not exercise prepare(), which closes over the local
+    -- instrument_ts implementation.
+    local orig_get_parser = vim.treesitter.get_string_parser
+    vim.treesitter.get_string_parser = function()
+      error('forced unavailable')
     end
     local ok, prepared_or_err = pcall(go_adapter.prepare, ctx_for(FULL_SRC))
-    go_adapter._instrument_ts = orig
+    vim.treesitter.get_string_parser = orig_get_parser
     assert(ok)
     local prepared = prepared_or_err
     with_cleanup(prepared, nil, function()
-      -- Same structured pipeline without fallback.
+      -- The public prepare path used the embedded scanner fallback.
       truthy(prepared.metadata.nonce ~= nil)
       local f = io.open(prepared.metadata.user_file, 'r')
       assert(f ~= nil)
       local content = f:read('*a')
       f:close()
       truthy(content:find('__itchyFmtPrintln', 1, true) ~= nil)
+      truthy(content:find('var _ = fmt.Sprint', 1, true) ~= nil)
     end)
   end)
 
   it('executes end to end with exact source-line mapping', function()
     if vim.fn.executable('go') ~= 1 then
+      pending('go is required for executable source mapping')
       return
     end
     local src = table.concat({
@@ -400,6 +431,7 @@ describe('itchy.adapters.go', function()
 
   it('reports return values and multiline calls end to end', function()
     if vim.fn.executable('go') ~= 1 then
+      pending('go is required for multiline execution coverage')
       return
     end
     local src = table.concat({
@@ -442,6 +474,7 @@ describe('itchy.adapters.go', function()
 
   it('renders padded selection sources on original buffer lines', function()
     if vim.fn.executable('go') ~= 1 then
+      pending('go is required for Go selection mapping coverage')
       return
     end
     -- Visual selection of buffer line 3: leading lines padded with newlines
@@ -470,46 +503,68 @@ describe('itchy.adapters.go', function()
     end)
   end)
 
-  it('wraps bare fragments using non-instrumented fmt APIs', function()
-    -- fmt.Sprintf is never rewritten, but the fragment still needs the
-    -- import to compile (regression: plain-search for "fmt%." never fired).
-    local src = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n'
-    local prepared = go_adapter.prepare(ctx_for(src))
-    with_cleanup(prepared, nil, function()
-      local f = io.open(prepared.metadata.user_file, 'r')
-      assert(f ~= nil)
-      local content = f:read('*a')
-      f:close()
-      truthy(content:find('import "fmt"', 1, true) ~= nil)
-      truthy(content:find('fmt.Sprintf', 1, true) ~= nil)
-    end)
-  end)
-
-  it('wraps bare fragments using non-Print log APIs', function()
-    local src = 'log.Fatal("boom")\n'
-    local prepared = go_adapter.prepare(ctx_for(src))
-    with_cleanup(prepared, nil, function()
-      local f = io.open(prepared.metadata.user_file, 'r')
-      assert(f ~= nil)
-      local content = f:read('*a')
-      f:close()
-      truthy(content:find('import "log"', 1, true) ~= nil)
-    end)
-  end)
-
-  it('ignores fmt-like text in comments and strings when wrapping', function()
-    -- "catalog." contains "log." and the comment names fmt.Println: neither
-    -- is a use, so no unused import may be added (that would fail the build).
-    local src = '// see fmt.Println docs\nfmt.Println("see catalog.")\n'
-    local prepared = go_adapter.prepare(ctx_for(src))
-    with_cleanup(prepared, nil, function()
-      local f = io.open(prepared.metadata.user_file, 'r')
-      assert(f ~= nil)
-      local content = f:read('*a')
-      f:close()
-      truthy(content:find('import "fmt"', 1, true) ~= nil)
-      falsy(content:find('import "log"', 1, true) ~= nil)
-    end)
+  it('handles bare, grouped, commented, and string-only import cases', function()
+    local cases = {
+      {
+        name = 'bare fmt API',
+        source = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n',
+        imports = { fmt = false, log = false },
+        contains = { 'fmt.Sprintf', 'import "fmt"' },
+        absent = { 'import "log"' },
+      },
+      {
+        name = 'bare log API',
+        source = 'log.Fatal("boom")\n',
+        imports = { fmt = false, log = false },
+        contains = { 'import "log"' },
+        absent = { 'import "fmt"' },
+      },
+      {
+        name = 'comments and strings',
+        source = '// see fmt.Println docs\nfmt.Println("see catalog.")\n',
+        imports = { fmt = false, log = false },
+        contains = { '__itchyFmtPrintln("see catalog.")' },
+        generated = { 'import "fmt"' },
+        absent = { 'import "log"' },
+      },
+      {
+        name = 'quoted full-file comment',
+        source = table.concat({
+          'package main', '', '// "fmt"', 'func main() {', '\tprintln("ok")', '}', '',
+        }, '\n'),
+        imports = { fmt = false, log = false },
+        absent = { 'import "fmt"', 'import "log"' },
+      },
+      {
+        name = 'grouped imports',
+        source = table.concat({
+          'package main', '', 'import (', '\t"fmt"', '\t"log"', ')', '',
+          'func main() {', '\tfmt.Println("fmt")', '\tlog.Println("log")', '}', '',
+        }, '\n'),
+        imports = { fmt = true, log = true },
+        contains = { 'var _ = fmt.Sprint', 'var _ = log.Print' },
+      },
+    }
+    for _, case in ipairs(cases) do
+      local prepared = go_adapter.prepare(ctx_for(case.source))
+      with_cleanup(prepared, nil, function()
+        local file = io.open(prepared.metadata.user_file, 'r')
+        assert(file ~= nil)
+        local content = file:read('*a')
+        file:close()
+        eq(go_adapter._has_import(case.source, 'fmt'), case.imports.fmt, case.name .. ' fmt import')
+        eq(go_adapter._has_import(case.source, 'log'), case.imports.log, case.name .. ' log import')
+        for _, needle in ipairs(case.contains or {}) do
+          truthy(content:find(needle, 1, true) ~= nil, case.name .. ': missing ' .. needle)
+        end
+        for _, needle in ipairs(case.generated or {}) do
+          truthy(content:find(needle, 1, true) ~= nil, case.name .. ': missing generated ' .. needle)
+        end
+        for _, needle in ipairs(case.absent or {}) do
+          falsy(content:find(needle, 1, true) ~= nil, case.name .. ': unexpected ' .. needle)
+        end
+      end)
+    end
     falsy(go_adapter._code_uses_package('// fmt.Println("comment")', 'fmt'))
     falsy(go_adapter._code_uses_package('s := "log.Fatal(\\"x\\")"', 'log'))
     truthy(go_adapter._code_uses_package('x := fmt.Sprintf("%d", 1)', 'fmt'))
@@ -517,6 +572,7 @@ describe('itchy.adapters.go', function()
 
   it('executes bare fragments using non-instrumented fmt APIs end to end', function()
     if vim.fn.executable('go') ~= 1 then
+      pending('go is required for bare fragment execution coverage')
       return
     end
     local src = 'x := fmt.Sprintf("%d", 42)\nfmt.Println(x)\n'

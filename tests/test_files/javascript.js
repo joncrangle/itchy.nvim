@@ -24,10 +24,12 @@ async function main() {
 
 main();
 
-// File read error
-try {
-	const fs = await import("node:fs");
-	fs.readFileSync("non_existent_file.txt", "utf8");
-} catch (e) {
-	console.error("File error:", e?.message ?? e);
+async function readFileError() { // File read error
+	try {
+		const fs = await import("node:fs");
+		fs.readFileSync("non_existent_file.txt", "utf8");
+	} catch (e) {
+		console.error("File error: no such file or directory");
+	}
 }
+readFileError();

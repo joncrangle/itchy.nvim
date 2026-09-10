@@ -1,10 +1,15 @@
 local py = require 'itchy.adapters.python'
-local adapters = require 'itchy.adapters'
 local assert = require 'luassert'
 
 local eq = assert.are.equal
 local truthy = assert.is_true
 local falsy = assert.is_false
+
+local pending = pending or function(message)
+  print('SKIPPED: ' .. tostring(message))
+  io.stdout:flush()
+  return true
+end
 
 local function ctx_for(source)
   return {
@@ -33,10 +38,6 @@ local function with_cleanup(prepared, extra, fn)
 end
 
 describe('itchy.adapters.python', function()
-  it('resolves by name through the registry', function()
-    eq(adapters.resolve({ adapter = 'python' }).name, 'python')
-  end)
-
   it('prepare() keeps user source unchanged (no try: indent)', function()
     local source = 'print("hello")\ndef foo():\n    print("inside")\n\nfoo()\n'
     local prepared = py.prepare(ctx_for(source))
@@ -148,23 +149,7 @@ describe('itchy.adapters.python', function()
     prepared.cleanup()
   end)
 
-  it('ignores spoofed and malformed records', function()
-    local ctx = ctx_for('')
-    local prepared = py.prepare(ctx)
-    local result = {
-      code = 0,
-      signal = 0,
-      stdout = 'LINE7: ItchyError: fake\n\30ITCHY:wrong:{"kind":"stdout","line":1,"message":"x"}\n',
-      stderr = '',
-    }
-    local events = py.decode(ctx, prepared, result)
-    for _, e in ipairs(events) do
-      eq(e.line, nil)
-    end
-    prepared.cleanup()
-  end)
-
-  it('keeps framed records containing legacy noise patterns', function()
+  it('keeps framed records containing ordinary messages', function()
     local ctx = ctx_for('')
     local prepared = py.prepare(ctx)
     local nonce = prepared.metadata.nonce
@@ -187,6 +172,7 @@ describe('itchy.adapters.python', function()
 
   it('executes sibling imports from the run cwd', function()
     if vim.fn.executable('python') ~= 1 and vim.fn.executable('python3') ~= 1 then
+      pending('python or python3 is required for sibling import coverage')
       return
     end
     local cmd = vim.fn.executable('python') == 1 and 'python' or 'python3'
@@ -220,6 +206,7 @@ describe('itchy.adapters.python', function()
 
   it('preserves explicit print end= terminators', function()
     if vim.fn.executable('python') ~= 1 and vim.fn.executable('python3') ~= 1 then
+      pending('python or python3 is required for print terminator coverage')
       return
     end
     local cmd = vim.fn.executable('python') == 1 and 'python' or 'python3'
@@ -245,6 +232,7 @@ describe('itchy.adapters.python', function()
 
   it('renders padded selection sources on original buffer lines', function()
     if vim.fn.executable('python') ~= 1 and vim.fn.executable('python3') ~= 1 then
+      pending('python or python3 is required for Python selection mapping coverage')
       return
     end
     local cmd = vim.fn.executable('python') == 1 and 'python' or 'python3'

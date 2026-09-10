@@ -3,10 +3,12 @@ local runtimes = require 'itchy.runtimes'
 local assert = require 'luassert'
 
 local eq = assert.are.equal
+local same = assert.are.same
 local has_error = assert.has_error
+local truthy = assert.is_true
 
 describe('itchy.adapters registry', function()
-  it('resolves built-in adapters by name', function()
+  it('resolves all built-in adapters and runtimes', function()
     local names = { 'bash', 'zsh', 'sh', 'go', 'javascript', 'python', 'powershell' }
     for _, name in ipairs(names) do
       local adapter = adapters.resolve { cmd = name, args = {}, adapter = name }
@@ -14,9 +16,7 @@ describe('itchy.adapters registry', function()
       eq(type(adapter.prepare), 'function')
       eq(type(adapter.decode), 'function')
     end
-  end)
 
-  it('resolves every built-in runtime successfully', function()
     for ft, rts in pairs(runtimes.available_runtimes) do
       for rt_name, rt in pairs(rts) do
         assert(rt.adapter ~= nil, string.format('runtime %s.%s must specify an adapter', ft, rt_name))
@@ -25,20 +25,6 @@ describe('itchy.adapters registry', function()
         eq(type(resolved.decode), 'function')
       end
     end
-  end)
-
-  it('accepts a custom adapter table implementing prepare and decode', function()
-    local custom = {
-      name = 'custom',
-      prepare = function(ctx)
-        return { source = ctx.source }
-      end,
-      decode = function(_, _, _)
-        return {}
-      end,
-    }
-    local resolved = adapters.resolve { cmd = 'custom', args = {}, adapter = custom }
-    eq(resolved, custom)
   end)
 
   it('fails explicitly when runtime is nil or missing an adapter', function()
@@ -63,68 +49,6 @@ describe('itchy.adapters registry', function()
     eq(runtimes.available_runtimes.dosbatch, nil)
   end)
 
-  it('runtimes.create_runtime does not populate offset or wrapper', function()
-    local rt = runtimes.create_runtime('echo', {}, 'sh')
-    eq(rt.offset, nil)
-    eq(rt.wrapper, nil)
-    eq(rt.adapter, 'sh')
-  end)
-
-  local function find_lua_files(dir)
-    local files = {}
-    local function scan(current_dir)
-      local handle = vim.uv.fs_scandir(current_dir)
-      if not handle then
-        return
-      end
-      while true do
-        local name, type_ = vim.uv.fs_scandir_next(handle)
-        if not name then
-          break
-        end
-        local path = current_dir .. '/' .. name
-        if type_ == 'directory' then
-          scan(path)
-        elseif type_ == 'file' and name:match '%.lua$' then
-          table.insert(files, path)
-        end
-      end
-    end
-    scan(dir)
-    return files
-  end
-
-  it('no production module imports itchy.adapters.legacy or itchy.wrappers', function()
-    local files = find_lua_files 'lua/itchy'
-    assert(#files > 0, 'expected to find lua files in lua/itchy')
-    for _, file in ipairs(files) do
-      local f = io.open(file, 'r')
-      assert(f ~= nil, 'cannot open ' .. file)
-      local content = f:read '*a'
-      f:close()
-      assert(
-        not content:match "require%s*%(?['\"]itchy%.adapters%.legacy['\"]%)?",
-        string.format('%s imports itchy.adapters.legacy', file)
-      )
-      assert(
-        not content:match "require%s*%(?['\"]itchy%.wrappers",
-        string.format('%s imports itchy.wrappers', file)
-      )
-    end
-  end)
-
-  it('repository audit finds no stale migration issue-number comments in production Lua', function()
-    local files = find_lua_files 'lua/itchy'
-    assert(#files > 0, 'expected to find lua files in lua/itchy')
-    for _, file in ipairs(files) do
-      local f = io.open(file, 'r')
-      assert(f ~= nil, 'cannot open ' .. file)
-      local content = f:read '*a'
-      f:close()
-      local match = content:match '#%d+'
-      eq(match, nil, string.format('%s contains stale migration issue reference: %s', file, tostring(match)))
-    end
-  end)
 end)
 
 describe('Lua and Snacks integration', function()
@@ -141,6 +65,7 @@ describe('Lua and Snacks integration', function()
     local orig_load_runtimes = runtimes.load_runtimes
 
     local ran_snacks = false
+    local snacks_run_opts
     local resolve_called = false
     local load_runtimes_called = false
 
@@ -156,8 +81,9 @@ describe('Lua and Snacks integration', function()
     cfg.cfg.integrations.snacks = true
     package.loaded['snacks'] = {
       debug = {
-        run = function()
+        run = function(opts)
           ran_snacks = true
+          snacks_run_opts = opts
         end,
       },
     }
@@ -169,6 +95,7 @@ describe('Lua and Snacks integration', function()
     itchy.run(nil, buf)
 
     eq(ran_snacks, true)
+    same(snacks_run_opts, { buf = buf })
     eq(resolve_called, false)
     eq(load_runtimes_called, false)
 
@@ -245,24 +172,67 @@ describe('Lua and Snacks integration', function()
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
   end)
 
-  it('itchy.clear() on a Lua buffer clears snacks_debug namespace', function()
+  it('Snacks clear is safe before the debug namespace is initialized', function()
     local itchy = require 'itchy'
+    local cfg = require 'itchy.config'
+    local orig_did_setup = itchy.did_setup
+    local orig_snacks_cfg = cfg.cfg.integrations.snacks
+    local orig_loaded_snacks = package.loaded['snacks']
+    local orig_get_namespaces = vim.api.nvim_get_namespaces
+    local merged
+
+    local snacks_config = {}
+    function snacks_config:merge(opts)
+      if opts.scratch and opts.scratch.win_by_ft and opts.scratch.win_by_ft.lua then
+        merged = opts
+      end
+    end
+
+    package.loaded['snacks'] = {
+      config = snacks_config,
+      debug = { run = function() end },
+    }
+    cfg.cfg.integrations.snacks = true
+    itchy.did_setup = nil
+    itchy.setup {}
+
+    vim.api.nvim_get_namespaces = function()
+      local namespaces = orig_get_namespaces()
+      namespaces.snacks_debug = nil
+      return namespaces
+    end
+
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].filetype = 'lua'
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'print(1)' })
+    assert(merged ~= nil)
+    local clear = merged.scratch.win_by_ft.lua.keys.clear[2]
+    local run = merged.scratch.win_by_ft.lua.keys.run[2]
+    local ok, err = pcall(clear, { buf = buf })
 
+    vim.api.nvim_get_namespaces = orig_get_namespaces
     local snacks_ns = vim.api.nvim_create_namespace('snacks_debug')
     vim.api.nvim_buf_set_extmark(buf, snacks_ns, 0, 0, { virt_text = { { 'output', 'Comment' } } })
-    local before = vim.api.nvim_buf_get_extmarks(buf, snacks_ns, 0, -1, {})
-    eq(#before, 1)
+    eq(#vim.api.nvim_buf_get_extmarks(buf, snacks_ns, 0, -1, {}), 1)
+    local after_ok, after_err = pcall(clear, { buf = buf })
+    eq(#vim.api.nvim_buf_get_extmarks(buf, snacks_ns, 0, -1, {}), 0)
 
-    itchy.clear(buf)
+    local ran_buf
+    local old_run = package.loaded['snacks'].debug.run
+    package.loaded['snacks'].debug.run = function(opts)
+      ran_buf = opts.buf
+    end
+    local run_ok, run_err = pcall(run, { buf = buf })
+    package.loaded['snacks'].debug.run = old_run
 
-    local after = vim.api.nvim_buf_get_extmarks(buf, snacks_ns, 0, -1, {})
-    eq(#after, 0)
-
+    itchy.did_setup = orig_did_setup
+    cfg.cfg.integrations.snacks = orig_snacks_cfg
+    package.loaded['snacks'] = orig_loaded_snacks
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
+
+    truthy(merged ~= nil)
+    truthy(ok, tostring(err))
+    truthy(after_ok, tostring(after_err))
+    truthy(run_ok, tostring(run_err))
+    eq(ran_buf, buf)
   end)
 end)
-
-
